@@ -159,17 +159,55 @@ object GitHubUpdater {
                 val outFile = File(dir, "DynamicIsland-$tag.apk")
                 if (outFile.exists()) outFile.delete()
 
-                val conn = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    connectTimeout = 15000
-                    readTimeout = 30000
-                }
-                conn.inputStream.use { input ->
-                    FileOutputStream(outFile).use { output ->
-                        input.copyTo(output)
+                var currentUrl = apkUrl
+                var hops = 0
+                var conn: HttpURLConnection? = null
+                while (hops < 8) {
+                    val c = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = 20000
+                        readTimeout = 60000
+                        setRequestProperty("User-Agent", "DynamicIsland/${BuildConfig.VERSION_NAME}")
+                        setRequestProperty("Accept", "application/octet-stream, */*")
+                    }
+                    val code = c.responseCode
+                    if (code in listOf(301, 302, 303, 307, 308)) {
+                        val loc = c.getHeaderField("Location")
+                        c.disconnect()
+                        if (loc.isNullOrBlank()) throw IllegalStateException("Empty redirect")
+                        currentUrl = URL(URL(currentUrl), loc).toString()
+                        hops++
+                    } else if (code == 200) {
+                        conn = c
+                        break
+                    } else {
+                        c.disconnect()
+                        throw IllegalStateException("HTTP $code")
                     }
                 }
-                conn.disconnect()
+                val activeConn = conn ?: throw IllegalStateException("Too many redirects")
+                activeConn.inputStream.use { input ->
+                    FileOutputStream(outFile).use { output ->
+                        input.copyTo(output, bufferSize = 16384)
+                        output.flush()
+                        try { output.fd.sync() } catch (_: Exception) {}
+                    }
+                }
+                activeConn.disconnect()
+
+                // Verify the downloaded file is a real APK (starts with ZIP magic bytes "PK" and > 100 KB)
+                val header = ByteArray(2)
+                val readBytes = outFile.inputStream().use { it.read(header) }
+                val isValidApk = outFile.length() > 100_000L && readBytes == 2 &&
+                    header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()
+                if (!isValidApk) {
+                    outFile.delete()
+                    mainHandler.post {
+                        Toast.makeText(activity, "جاري فتح رابط التحميل في المتصفح...", Toast.LENGTH_LONG).show()
+                        activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)))
+                    }
+                    return@thread
+                }
 
                 mainHandler.post {
                     val apkUri = FileProvider.getUriForFile(
