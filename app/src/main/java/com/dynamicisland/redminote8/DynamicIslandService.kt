@@ -506,11 +506,17 @@ class DynamicIslandService : Service() {
                 val comp = ComponentName(this, IslandNotificationListener::class.java)
                 val sessions = msm.getActiveSessions(comp)
                 if (!sessions.isNullOrEmpty()) {
-                    val best = sessions.firstOrNull {
+                    val amCheck = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val playingSession = sessions.firstOrNull {
                         val st = it.playbackState?.state
                         st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING
-                    } ?: sessions.firstOrNull {
-                        it.playbackState?.state == PlaybackState.STATE_PAUSED
+                    }
+                    // If audio is actively playing (e.g. Facebook video) but NO MediaSession is in PLAYING state,
+                    // do NOT show an old paused YouTube session — fall through to generic audio player!
+                    val best = playingSession ?: if (!amCheck.isMusicActive) {
+                        sessions.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PAUSED }
+                    } else {
+                        null
                     }
 
                     if (best != null) {
@@ -558,17 +564,22 @@ class DynamicIslandService : Service() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (am.isMusicActive) {
-                if (!IslandLiveStore.mediaActive) {
+                val prevCtrlPlaying = IslandLiveStore.activeController?.playbackState?.state == PlaybackState.STATE_PLAYING
+                if (!IslandLiveStore.mediaActive || !prevCtrlPlaying) {
+                    IslandLiveStore.activeController = null
                     IslandLiveStore.mediaActive = true
                     IslandLiveStore.mediaPlaying = true
-                    IslandLiveStore.mediaTitle = "وسائط قيد التشغيل"
+                    IslandLiveStore.mediaTitle = "فيديو / صوت قيد التشغيل"
                     IslandLiveStore.mediaArtist = "اضغط للتحكم بالتشغيل"
-                    IslandLiveStore.mediaPackage = "com.google.android.youtube"
+                    IslandLiveStore.mediaPackage = ""
+                    IslandLiveStore.mediaArt = null
                     if (!hiddenByFullscreen) wakeUpIsland(forceAnim = true)
                 }
             } else if (IslandLiveStore.activeController == null) {
                 IslandLiveStore.mediaActive = false
                 IslandLiveStore.mediaPlaying = false
+                IslandLiveStore.mediaPackage = ""
+                IslandLiveStore.mediaArt = null
             }
         } catch (_: Exception) {
         }
@@ -643,9 +654,7 @@ class DynamicIslandService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && settings.glassEffectEnabled) {
-                flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-            }
+
 
             val lp = WindowManager.LayoutParams(
                 if (settings.coverStatusBar) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
@@ -660,9 +669,7 @@ class DynamicIslandService : Service() {
                     layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && settings.glassEffectEnabled) {
-                    blurBehindRadius = dpToPx(24)
-                }
+
             }
 
             layoutParams = lp
@@ -753,15 +760,7 @@ class DynamicIslandService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT
         }
         lp.y = if (settings.coverStatusBar && !isExpanded) 0 else dpToPx(settings.topOffsetDp)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (settings.glassEffectEnabled) {
-                lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                lp.blurBehindRadius = dpToPx(24)
-            } else {
-                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                lp.blurBehindRadius = 0
-            }
-        }
+
         try {
             windowManager.updateViewLayout(v, lp)
         } catch (_: Exception) {
@@ -1112,11 +1111,11 @@ class DynamicIslandService : Service() {
                 val art = IslandLiveStore.mediaArt
                 if (appIcon != null) ivCompactIcon.setImageDrawable(appIcon)
                 else if (art != null) ivCompactIcon.setImageBitmap(art)
-                else ivCompactIcon.setImageResource(R.drawable.app_logo)
+                else ivCompactIcon.setImageResource(R.drawable.ic_media_wave)
 
                 if (art != null) ivExpandedIcon.setImageBitmap(art)
                 else if (appIcon != null) ivExpandedIcon.setImageDrawable(appIcon)
-                else ivExpandedIcon.setImageResource(R.drawable.app_logo)
+                else ivExpandedIcon.setImageResource(R.drawable.ic_media_wave)
 
                 tvCompactRightName.text = IslandLiveStore.mediaTitle
                 tvCompactLeftStatus.text = if (IslandLiveStore.mediaPlaying) "♪" else "⏸"

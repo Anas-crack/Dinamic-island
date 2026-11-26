@@ -96,13 +96,13 @@ object IslandConfig {
     }
 
     fun themeGlassColors(themeId: String, opacityPercent: Int): IntArray {
-        val alphaTop = ((opacityPercent.coerceIn(40, 100) / 100f) * 255f).toInt().coerceIn(90, 255)
-        val alphaBot = (alphaTop + 20).coerceIn(105, 255)
+        val alphaTop = ((opacityPercent.coerceIn(30, 100) / 100f) * 235f).toInt().coerceIn(70, 245)
+        val alphaBot = (alphaTop + 18).coerceIn(85, 255)
         return when (themeId) {
-            "charcoal" -> intArrayOf(Color.argb(alphaTop, 30, 38, 54), Color.argb(alphaBot, 14, 18, 28))
-            "navy" -> intArrayOf(Color.argb(alphaTop, 16, 36, 74), Color.argb(alphaBot, 7, 16, 38))
-            "light" -> intArrayOf(Color.argb(alphaTop, 250, 252, 255), Color.argb(alphaBot, 232, 240, 250))
-            else -> intArrayOf(Color.argb(alphaTop, 18, 22, 32), Color.argb(alphaBot, 4, 6, 10))
+            "charcoal" -> intArrayOf(Color.argb(alphaTop, 38, 48, 68), Color.argb(alphaBot, 16, 22, 34))
+            "navy" -> intArrayOf(Color.argb(alphaTop, 22, 48, 96), Color.argb(alphaBot, 8, 20, 46))
+            "light" -> intArrayOf(Color.argb(alphaTop, 255, 255, 255), Color.argb(alphaBot, 226, 236, 248))
+            else -> intArrayOf(Color.argb(alphaTop, 28, 34, 48), Color.argb(alphaBot, 8, 10, 16))
         }
     }
 
