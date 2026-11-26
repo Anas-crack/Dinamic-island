@@ -80,6 +80,12 @@
                         android:contentDescription="@string/app_name"
                         android:scaleType="centerCrop"
                         android:src="@drawable/app_logo" />
+
+                    <com.dynamicisland.redminote8.ChargingVortexBatteryView
+                        android:id="@+id/compactVortexBattery"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:visibility="gone" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -106,6 +112,12 @@
                         android:scaleType="centerCrop"
                         android:src="@drawable/app_logo" />
 
+                    <com.dynamicisland.redminote8.ChargingVortexBatteryView
+                        android:id="@+id/expandedVortexBattery"
+                        android:layout_width="68dp"
+                        android:layout_height="68dp"
+                        android:visibility="gone" />
+
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
@@ -114,9 +126,94 @@
                         android:orientation="vertical">
 
                         <TextView android:id="@+id/tvExpandedTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="15sp" android:textStyle="bold" />
-                        <TextView android:id="@+id/tvExpandedSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:maxLines="1" android:textColor="#CBD5E1" android:textSize="12sp" />
+                        <TextView android:id="@+id/tvExpandedSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:maxLines="3" android:textColor="#CBD5E1" android:textSize="12sp" />
                         <TextView android:id="@+id/tvExpandedMeta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:textColor="#38BDF8" android:textSize="11sp" />
                     </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/callActionsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/btnCallOpen"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_btn_green"
+                        android:gravity="center"
+                        android:text="📞 فتح المكالمة"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnCallEnd"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_btn_red"
+                        android:gravity="center"
+                        android:text="📵 إنهاء المكالمة"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/notifActionsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/btnNotifListen"
+                        android:layout_width="0dp"
+                        android:layout_height="34dp"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_btn_primary"
+                        android:gravity="center"
+                        android:text="🎧 استماع"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/btnNotifOpen"
+                        android:layout_width="0dp"
+                        android:layout_height="34dp"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:gravity="center"
+                        android:text="فتح الرسالة"
+                        android:textColor="#38BDF8"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnNotifDismiss"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:gravity="center"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:text="تم ✕"
+                        android:textColor="#CBD5E1"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
                 </LinearLayout>
 
                 <LinearLayout
