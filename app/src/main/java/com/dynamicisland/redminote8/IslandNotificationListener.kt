@@ -29,6 +29,10 @@ object IslandLiveStore {
     @Volatile var notifText: String = ""
     @Volatile var notifPackage: String = ""
     @Volatile var notifTimestamp: Long = 0L
+
+    @Volatile var secondaryMediaActive: Boolean = false
+    @Volatile var secondaryMediaPackage: String = ""
+    @Volatile var secondaryMediaTitle: String = ""
 }
 
 class IslandNotificationListener : NotificationListenerService() {

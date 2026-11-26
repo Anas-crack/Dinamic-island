@@ -13,6 +13,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -47,6 +48,7 @@ import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.animation.AnticipateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -59,6 +61,14 @@ import androidx.core.app.ServiceCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+
+data class BatteryDetails(
+    val pct: Int,
+    val isCharging: Boolean,
+    val watts: Int,
+    val isFast: Boolean
+)
 
 class DynamicIslandService : Service() {
 
@@ -67,6 +77,8 @@ class DynamicIslandService : Service() {
         const val ACTION_RELOAD_CONFIG = "com.dynamicisland.redminote8.ACTION_RELOAD_CONFIG"
         const val ACTION_TEST_PING = "com.dynamicisland.redminote8.ACTION_TEST_PING"
         const val ACTION_TEST_ANIM = "com.dynamicisland.redminote8.ACTION_TEST_ANIM"
+        const val ACTION_TEST_DUAL = "com.dynamicisland.redminote8.ACTION_TEST_DUAL"
+        const val ACTION_TEST_CHARGE = "com.dynamicisland.redminote8.ACTION_TEST_CHARGE"
         private const val CHANNEL_ID = "dynamic_island_overlay_channel"
         private const val NOTIF_ID = 8008
         @Volatile var isRunning: Boolean = false
@@ -74,13 +86,19 @@ class DynamicIslandService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var rootView: View? = null
+    private var fullscreenProbeView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var settings: IslandSettings = IslandSettings()
     private var isExpanded: Boolean = false
     private var isIslandHidden: Boolean = false
+    private var hiddenByFullscreen: Boolean = false
     private var lastActivityTime: Long = System.currentTimeMillis()
     private var wasCharging: Boolean = false
     private var chargingPopupUntil: Long = 0L
+    private var dualDemoUntil: Long = 0L
+    private var satelliteMode: String = ""
+    private var satellitePackage: String = ""
+    private var satelliteVisible: Boolean = false
 
     private var cachedAvatarUri: String? = null
     private var cachedAvatarBitmap: Bitmap? = null
@@ -90,57 +108,76 @@ class DynamicIslandService : Service() {
         override fun run() {
             pollActiveMediaSessions()
             checkChargingTransition()
-            evaluateAutoHide()
+            evaluateFullscreenAndAutoHide()
             updateIslandUi()
-            handler.postDelayed(this, 1000L)
+            handler.postDelayed(this, 750L)
         }
     }
 
-    private val updateReceiver = object : BroadcastReceiver() {
+    private val appReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 ACTION_RELOAD_CONFIG -> {
                     settings = IslandConfig.load(this@DynamicIslandService)
                     cachedAvatarUri = null
+                    hiddenByFullscreen = false
                     wakeUpIsland(forceAnim = false)
                     applyWindowPosition()
                     updateIslandUi()
                 }
                 ACTION_TEST_ANIM -> {
                     hideIslandAnimated()
-                    handler.postDelayed({ wakeUpIsland(forceAnim = true) }, 750L)
+                    handler.postDelayed({ wakeUpIsland(forceAnim = true) }, 700L)
+                }
+                ACTION_TEST_DUAL -> {
+                    dualDemoUntil = System.currentTimeMillis() + 12000L
+                    IslandLiveStore.notifActive = true
+                    IslandLiveStore.notifPackage = packageName
+                    IslandLiveStore.notifAppName = "نشاط مزدوج"
+                    IslandLiveStore.notifTitle = "الجزيرة المزدوجة نشطة الآن!"
+                    IslandLiveStore.notifText = "اضغط على الدائرة الجانبية للتبديل بين التطبيقين"
+                    IslandLiveStore.notifTimestamp = System.currentTimeMillis()
+                    setExpanded(false)
+                    wakeUpIsland(forceAnim = true)
+                    updateIslandUi()
+                }
+                ACTION_TEST_CHARGE -> {
+                    triggerChargingPopup(forceDemo = true)
                 }
                 ACTION_TEST_PING -> {
                     IslandLiveStore.notifActive = true
                     IslandLiveStore.notifPackage = packageName
                     IslandLiveStore.notifAppName = "Dynamic Island"
                     IslandLiveStore.notifTitle = "الإصدار v${BuildConfig.VERSION_NAME} يعمل بنجاح!"
-                    IslandLiveStore.notifText = "اضغط في أي مكان بالشاشة لتصغير الجزيرة"
+                    IslandLiveStore.notifText = "شفافية زجاجية + إخفاء ملء الشاشة + شحن فائق"
                     IslandLiveStore.notifTimestamp = System.currentTimeMillis()
                     wakeUpIsland(forceAnim = true)
                     setExpanded(true)
                 }
+                ACTION_REFRESH -> {
+                    wakeUpIsland(forceAnim = false)
+                    checkChargingTransition()
+                    updateIslandUi()
+                }
+            }
+        }
+    }
+
+    private val systemReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
                 Intent.ACTION_POWER_CONNECTED -> {
                     wasCharging = true
-                    chargingPopupUntil = System.currentTimeMillis() + 6000L
-                    wakeUpIsland(forceAnim = true)
-                    setExpanded(true)
-                    handler.postDelayed({
-                        if (System.currentTimeMillis() >= chargingPopupUntil && isExpanded) {
-                            setExpanded(false)
-                        }
-                    }, 6100L)
+                    triggerChargingPopup(forceDemo = false)
                 }
                 Intent.ACTION_POWER_DISCONNECTED -> {
                     wasCharging = false
                     chargingPopupUntil = 0L
                     updateIslandUi()
                 }
-                ACTION_REFRESH,
                 Intent.ACTION_BATTERY_CHANGED,
                 BluetoothAdapter.ACTION_STATE_CHANGED,
                 AudioManager.RINGER_MODE_CHANGED_ACTION -> {
-                    if (intent.action == ACTION_REFRESH) wakeUpIsland(forceAnim = false)
                     checkChargingTransition()
                     updateIslandUi()
                 }
@@ -150,11 +187,16 @@ class DynamicIslandService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        evaluateFullscreenAndAutoHide()
+    }
+
     override fun onCreate() {
         super.onCreate()
         settings = IslandConfig.load(this)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        wasCharging = getBatteryInfo().second
+        wasCharging = getBatteryDetails().isCharging
         lastActivityTime = System.currentTimeMillis()
 
         try {
@@ -178,6 +220,7 @@ class DynamicIslandService : Service() {
             return
         }
 
+        attachFullscreenProbe()
         if (!attachOverlayView()) {
             isRunning = false
             stopSelf()
@@ -186,11 +229,15 @@ class DynamicIslandService : Service() {
 
         isRunning = true
 
-        val filter = IntentFilter().apply {
+        val appFilter = IntentFilter().apply {
             addAction(ACTION_REFRESH)
             addAction(ACTION_RELOAD_CONFIG)
             addAction(ACTION_TEST_PING)
             addAction(ACTION_TEST_ANIM)
+            addAction(ACTION_TEST_DUAL)
+            addAction(ACTION_TEST_CHARGE)
+        }
+        val sysFilter = IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
@@ -198,10 +245,13 @@ class DynamicIslandService : Service() {
             addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(updateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(appReceiver, appFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(systemReceiver, sysFilter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            registerReceiver(updateReceiver, filter)
+            registerReceiver(appReceiver, appFilter)
+            @Suppress("DEPRECATION")
+            registerReceiver(systemReceiver, sysFilter)
         }
 
         wakeUpIsland(forceAnim = true)
@@ -211,6 +261,7 @@ class DynamicIslandService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         settings = IslandConfig.load(this)
         if (rootView == null && Settings.canDrawOverlays(this)) {
+            attachFullscreenProbe()
             if (attachOverlayView()) {
                 isRunning = true
             }
@@ -225,38 +276,75 @@ class DynamicIslandService : Service() {
     override fun onDestroy() {
         isRunning = false
         handler.removeCallbacks(clockTicker)
-        try {
-            unregisterReceiver(updateReceiver)
-        } catch (_: Exception) {
-        }
-        rootView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {
-            }
-        }
+        try { unregisterReceiver(appReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(systemReceiver) } catch (_: Exception) {}
+        rootView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
+        fullscreenProbeView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
         rootView = null
+        fullscreenProbeView = null
         super.onDestroy()
+    }
+
+    // 1px invisible edge probe WITHOUT FLAG_LAYOUT_IN_SCREEN:
+    // Normal apps place it below status bar (loc[1] > 0); Fullscreen/Immersive apps shift it to loc[1] == 0!
+    private fun attachFullscreenProbe() {
+        if (fullscreenProbeView != null) return
+        try {
+            val probe = View(this)
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+            val lp = WindowManager.LayoutParams(
+                1,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+            }
+            windowManager.addView(probe, lp)
+            fullscreenProbeView = probe
+        } catch (_: Exception) {
+            fullscreenProbeView = null
+        }
+    }
+
+    private fun isAppInFullscreen(): Boolean {
+        if (!settings.hideInFullscreen) return false
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            return true
+        }
+        val probe = fullscreenProbeView ?: return false
+        if (probe.height <= 0 || !probe.isAttachedToWindow) return false
+        val loc = IntArray(2)
+        probe.getLocationOnScreen(loc)
+        return loc[1] == 0
     }
 
     // Juicy iPhone-style Elastic Pop-In Animation
     private fun wakeUpIsland(forceAnim: Boolean) {
+        if (hiddenByFullscreen && !forceAnim) return
         lastActivityTime = System.currentTimeMillis()
-        val pill = rootView?.findViewById<View>(R.id.islandPill) ?: return
+        val container = rootView?.findViewById<View>(R.id.islandContainer) ?: return
         if (isIslandHidden || forceAnim) {
             isIslandHidden = false
-            pill.animate().cancel()
-            pill.visibility = View.VISIBLE
-            pill.alpha = 0f
-            pill.translationY = -dpToPx(38).toFloat()
-            pill.scaleX = 0.34f
-            pill.scaleY = 0.45f
-            pill.animate()
+            container.animate().cancel()
+            container.visibility = View.VISIBLE
+            container.alpha = 0f
+            container.translationY = -dpToPx(38).toFloat()
+            container.scaleX = 0.34f
+            container.scaleY = 0.45f
+            container.animate()
                 .alpha(1f)
                 .translationY(0f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(480L)
+                .setDuration(460L)
                 .setInterpolator(OvershootInterpolator(1.35f))
                 .start()
         }
@@ -264,41 +352,70 @@ class DynamicIslandService : Service() {
 
     // Juicy iPhone-style Elastic Pop-Out Animation
     private fun hideIslandAnimated() {
-        val pill = rootView?.findViewById<View>(R.id.islandPill) ?: return
+        val container = rootView?.findViewById<View>(R.id.islandContainer) ?: return
         if (isIslandHidden) return
         isIslandHidden = true
         isExpanded = false
-        pill.animate().cancel()
-        pill.animate()
+        container.animate().cancel()
+        container.animate()
             .alpha(0f)
             .translationY(-dpToPx(40).toFloat())
             .scaleX(0.30f)
             .scaleY(0.42f)
-            .setDuration(360L)
+            .setDuration(340L)
             .setInterpolator(AnticipateInterpolator(1.2f))
             .withEndAction {
-                if (isIslandHidden) pill.visibility = View.GONE
+                if (isIslandHidden) container.visibility = View.GONE
             }
             .start()
     }
 
-    private fun evaluateAutoHide() {
+    private fun evaluateFullscreenAndAutoHide() {
+        if (isAppInFullscreen()) {
+            if (!hiddenByFullscreen) {
+                hiddenByFullscreen = true
+                hideIslandAnimated()
+            }
+            return
+        } else if (hiddenByFullscreen) {
+            hiddenByFullscreen = false
+            wakeUpIsland(forceAnim = true)
+            return
+        }
+
         if (!settings.autoHideEnabled || settings.autoHideSeconds <= 0) {
             if (isIslandHidden) wakeUpIsland(forceAnim = true)
             return
         }
-        val hasRecentNotif = IslandLiveStore.notifActive &&
-            (System.currentTimeMillis() - IslandLiveStore.notifTimestamp < 7000L)
-        val hasCharging = System.currentTimeMillis() < chargingPopupUntil
-        val isBusy = isExpanded || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging
+
+        val now = System.currentTimeMillis()
+        val hasRecentNotif = IslandLiveStore.notifActive && (now - IslandLiveStore.notifTimestamp < 7000L)
+        val hasCharging = now < chargingPopupUntil
+        val hasDualDemo = now < dualDemoUntil
+        val isBusy = isExpanded || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging || hasDualDemo
 
         if (isBusy) {
             wakeUpIsland(forceAnim = false)
         } else {
             val waitMs = settings.autoHideSeconds.coerceIn(5, 300) * 1000L
-            if (!isIslandHidden && (System.currentTimeMillis() - lastActivityTime >= waitMs)) {
+            if (!isIslandHidden && (now - lastActivityTime >= waitMs)) {
                 hideIslandAnimated()
             }
+        }
+    }
+
+    private fun triggerChargingPopup(forceDemo: Boolean) {
+        chargingPopupUntil = System.currentTimeMillis() + 7000L
+        if (!hiddenByFullscreen || forceDemo) {
+            hiddenByFullscreen = false
+            wakeUpIsland(forceAnim = true)
+            setExpanded(true)
+            updateIslandUi()
+            handler.postDelayed({
+                if (System.currentTimeMillis() >= chargingPopupUntil && isExpanded) {
+                    setExpanded(false)
+                }
+            }, 7100L)
         }
     }
 
@@ -321,18 +438,11 @@ class DynamicIslandService : Service() {
     }
 
     private fun checkChargingTransition() {
-        val (_, nowCharging) = getBatteryInfo()
-        if (nowCharging && !wasCharging) {
+        val batt = getBatteryDetails()
+        if (batt.isCharging && !wasCharging) {
             wasCharging = true
-            chargingPopupUntil = System.currentTimeMillis() + 6000L
-            wakeUpIsland(forceAnim = true)
-            setExpanded(true)
-            handler.postDelayed({
-                if (System.currentTimeMillis() >= chargingPopupUntil && isExpanded) {
-                    setExpanded(false)
-                }
-            }, 6100L)
-        } else if (!nowCharging && wasCharging) {
+            triggerChargingPopup(forceDemo = false)
+        } else if (!batt.isCharging && wasCharging) {
             wasCharging = false
             chargingPopupUntil = 0L
         }
@@ -383,7 +493,7 @@ class DynamicIslandService : Service() {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val now = SystemClock.uptimeMillis()
             am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
-            am.dispatchMediaKeyEvent(KeyEvent(now + 10, now + 10, KeyEvent.ACTION_UP, keyCode, 0))
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
         } catch (_: Exception) {
         }
     }
@@ -421,7 +531,22 @@ class DynamicIslandService : Service() {
                             ?: appLabel
                         IslandLiveStore.mediaArt = meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                             ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART)
-                        if (!wasPlaying && IslandLiveStore.mediaPlaying) wakeUpIsland(forceAnim = true)
+
+                        val second = sessions.firstOrNull { it.packageName != pkg && !it.packageName.isNullOrBlank() }
+                        if (second != null) {
+                            IslandLiveStore.secondaryMediaActive = true
+                            IslandLiveStore.secondaryMediaPackage = second.packageName ?: ""
+                            IslandLiveStore.secondaryMediaTitle = second.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: getFriendlyAppName(second.packageName)
+                        } else {
+                            IslandLiveStore.secondaryMediaActive = false
+                            IslandLiveStore.secondaryMediaPackage = ""
+                            IslandLiveStore.secondaryMediaTitle = ""
+                        }
+
+                        if (!wasPlaying && IslandLiveStore.mediaPlaying && !hiddenByFullscreen) {
+                            wakeUpIsland(forceAnim = true)
+                        }
                         return
                     }
                 }
@@ -429,6 +554,7 @@ class DynamicIslandService : Service() {
             }
         }
 
+        IslandLiveStore.secondaryMediaActive = false
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (am.isMusicActive) {
@@ -438,7 +564,7 @@ class DynamicIslandService : Service() {
                     IslandLiveStore.mediaTitle = "وسائط قيد التشغيل"
                     IslandLiveStore.mediaArtist = "اضغط للتحكم بالتشغيل"
                     IslandLiveStore.mediaPackage = "com.google.android.youtube"
-                    wakeUpIsland(forceAnim = true)
+                    if (!hiddenByFullscreen) wakeUpIsland(forceAnim = true)
                 }
             } else if (IslandLiveStore.activeController == null) {
                 IslandLiveStore.mediaActive = false
@@ -489,10 +615,10 @@ class DynamicIslandService : Service() {
         if (isExpanded == expand) return
         isExpanded = expand
         lastActivityTime = System.currentTimeMillis()
-        val pill = rootView?.findViewById<ViewGroup>(R.id.islandPill)
-        if (pill != null) {
+        val container = rootView?.findViewById<ViewGroup>(R.id.islandContainer)
+        if (container != null) {
             val transition = AutoTransition().apply { duration = 220 }
-            TransitionManager.beginDelayedTransition(pill, transition)
+            TransitionManager.beginDelayedTransition(container, transition)
         }
         applyWindowPosition()
         updateIslandUi()
@@ -511,15 +637,21 @@ class DynamicIslandService : Service() {
                 WindowManager.LayoutParams.TYPE_PHONE
             }
 
+            var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && settings.glassEffectEnabled) {
+                flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+            }
+
             val lp = WindowManager.LayoutParams(
                 if (settings.coverStatusBar) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                flags,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -528,6 +660,9 @@ class DynamicIslandService : Service() {
                     layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && settings.glassEffectEnabled) {
+                    blurBehindRadius = dpToPx(24)
+                }
             }
 
             layoutParams = lp
@@ -535,6 +670,7 @@ class DynamicIslandService : Service() {
 
             clipRounded(view.findViewById(R.id.ivCompactIcon), 999f)
             clipRounded(view.findViewById(R.id.ivExpandedIcon), dpToPx(16).toFloat())
+            clipRounded(view.findViewById(R.id.ivSatelliteIcon), 999f)
 
             view.setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_OUTSIDE && isExpanded) {
@@ -548,6 +684,32 @@ class DynamicIslandService : Service() {
             pill.setOnClickListener {
                 lastActivityTime = System.currentTimeMillis()
                 setExpanded(!isExpanded)
+            }
+
+            val satBubble = view.findViewById<View>(R.id.satelliteBubble)
+            satBubble.setOnClickListener {
+                lastActivityTime = System.currentTimeMillis()
+                when (satelliteMode) {
+                    "charge" -> triggerChargingPopup(forceDemo = true)
+                    "app", "notif", "media2" -> {
+                        if (satellitePackage.isNotBlank() && satellitePackage != packageName) {
+                            try {
+                                val launch = packageManager.getLaunchIntentForPackage(satellitePackage)
+                                if (launch != null) {
+                                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    startActivity(launch)
+                                } else {
+                                    setExpanded(true)
+                                }
+                            } catch (_: Exception) {
+                                setExpanded(true)
+                            }
+                        } else {
+                            setExpanded(true)
+                        }
+                    }
+                    else -> setExpanded(true)
+                }
             }
 
             view.findViewById<ImageButton>(R.id.btnPrev).setOnClickListener { handleMediaControl("prev") }
@@ -591,6 +753,15 @@ class DynamicIslandService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT
         }
         lp.y = if (settings.coverStatusBar && !isExpanded) 0 else dpToPx(settings.topOffsetDp)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (settings.glassEffectEnabled) {
+                lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                lp.blurBehindRadius = dpToPx(24)
+            } else {
+                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
+                lp.blurBehindRadius = 0
+            }
+        }
         try {
             windowManager.updateViewLayout(v, lp)
         } catch (_: Exception) {
@@ -611,10 +782,42 @@ class DynamicIslandService : Service() {
         }
     }
 
-    private fun getBatteryInfo(): Pair<Int, Boolean> {
+    // Triple-redundant Xiaomi/MIUI & Universal Fast Charging Detection + Real Live Wattage
+    private fun getBatteryDetails(): BatteryDetails {
         val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-        val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
-        return Pair(pct, bm.isCharging)
+        val sticky = try {
+            registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        } catch (_: Exception) {
+            null
+        }
+
+        val level = sticky?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = sticky?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+        val pctFromIntent = if (level >= 0 && scale > 0) (level * 100) / scale else -1
+        val pct = if (pctFromIntent in 0..100) pctFromIntent
+        else bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+
+        val status = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val plugged = sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val charging = bm.isCharging ||
+            plugged != 0 ||
+            status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            (status == BatteryManager.BATTERY_STATUS_FULL && plugged != 0)
+
+        val voltageMv = sticky?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
+        val rawCurrent = try {
+            abs(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW))
+        } catch (_: Exception) {
+            0
+        }
+        val currentMa = if (rawCurrent > 10000) rawCurrent / 1000.0 else rawCurrent.toDouble()
+        val watts = if (charging && voltageMv > 0 && currentMa > 100.0) {
+            ((voltageMv / 1000.0) * (currentMa / 1000.0)).toInt().coerceIn(1, 120)
+        } else {
+            0
+        }
+        val isFast = charging && (watts >= 12 || plugged == BatteryManager.BATTERY_PLUGGED_AC)
+        return BatteryDetails(pct, charging, watts, isFast)
     }
 
     // Crisp anti-aliased center-square high-res bitmap decoder (ZERO pixelation / blur!)
@@ -648,9 +851,32 @@ class DynamicIslandService : Service() {
         }
     }
 
+    private fun buildSurfaceDrawable(isCircle: Boolean, strokeColor: Int, isCoverBar: Boolean): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            if (isCircle) {
+                cornerRadius = dpToPx(99).toFloat()
+            } else if (isCoverBar) {
+                val r = dpToPx(14).toFloat()
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
+            } else {
+                cornerRadius = dpToPx(settings.cornerRadiusDp).toFloat()
+            }
+            if (settings.glassEffectEnabled) {
+                orientation = GradientDrawable.Orientation.TOP_BOTTOM
+                colors = IslandConfig.themeGlassColors(settings.themeId, settings.glassOpacityPercent)
+            } else {
+                setColor(IslandConfig.themeSolidColor(settings.themeId))
+            }
+            setStroke(dpToPx(1), strokeColor)
+        }
+    }
+
     private fun updateIslandUi() {
         val view = rootView ?: return
         val pill = view.findViewById<LinearLayout>(R.id.islandPill)
+        val satelliteBubble = view.findViewById<FrameLayout>(R.id.satelliteBubble)
+        val ivSatelliteIcon = view.findViewById<ImageView>(R.id.ivSatelliteIcon)
         val compactRow = view.findViewById<LinearLayout>(R.id.compactRow)
         val expandedBox = view.findViewById<LinearLayout>(R.id.expandedBox)
         val mediaControls = view.findViewById<LinearLayout>(R.id.mediaControlsRow)
@@ -672,40 +898,115 @@ class DynamicIslandService : Service() {
         val btnPlayPause = view.findViewById<ImageButton>(R.id.btnPlayPause)
 
         val (hasWifi, hasCell) = getNetworkStatus()
-        val (batteryPct, isCharging) = getBatteryInfo()
+        val batt = getBatteryDetails()
+        val batteryPct = batt.pct
+        val isCharging = batt.isCharging
         val btOn = isBluetoothOn()
         val silentOn = isSilentOrVibrate()
-        val isChargingAlert = isCharging && System.currentTimeMillis() < chargingPopupUntil
+        val nowMs = System.currentTimeMillis()
+        val isChargingAlert = nowMs < chargingPopupUntil
+        val isDualDemo = nowMs < dualDemoUntil
 
-        val solidBg = IslandConfig.themeSolidColor(settings.themeId)
         val isLight = IslandConfig.isLightTheme(settings.themeId)
         val strokeColor = when {
-            isChargingAlert -> Color.rgb(52, 211, 153)
+            isChargingAlert || isCharging -> Color.argb(190, 52, 211, 153)
+            settings.glassEffectEnabled && isLight -> Color.argb(150, 255, 255, 255)
+            settings.glassEffectEnabled -> Color.argb(95, 255, 255, 255)
             isLight -> Color.rgb(203, 213, 225)
             else -> Color.rgb(30, 41, 59)
         }
         val primaryText = if (isLight) Color.rgb(15, 23, 42) else Color.WHITE
         val mutedText = if (isLight) Color.rgb(71, 85, 105) else Color.rgb(190, 204, 224)
 
-        val drawable = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            if (settings.coverStatusBar && !isExpanded) {
-                val r = dpToPx(14).toFloat()
-                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
-            } else {
-                cornerRadius = dpToPx(settings.cornerRadiusDp).toFloat()
+        val isCoverBar = settings.coverStatusBar && !isExpanded
+        pill.background = buildSurfaceDrawable(isCircle = false, strokeColor = strokeColor, isCoverBar = isCoverBar)
+
+        val showNotif = IslandLiveStore.notifActive && (nowMs - IslandLiveStore.notifTimestamp < 7000L)
+
+        // Determine Dual-Activity Satellite Bubble (iPhone Split Pill + Detached Circle)
+        var wantSat = false
+        var satMode = ""
+        var satPkg = ""
+        var satStroke = strokeColor
+        if (settings.dualActivityEnabled && !isExpanded && !isCoverBar) {
+            when {
+                isDualDemo -> {
+                    wantSat = true
+                    satMode = "charge"
+                    satStroke = Color.argb(210, 52, 211, 153)
+                    ivSatelliteIcon.setImageResource(R.drawable.ic_charging_bolt)
+                    ivSatelliteIcon.clearColorFilter()
+                }
+                IslandLiveStore.mediaActive && showNotif -> {
+                    wantSat = true
+                    satMode = "media2"
+                    satPkg = IslandLiveStore.mediaPackage
+                    val mIcon = loadAppIcon(IslandLiveStore.mediaPackage)
+                    if (mIcon != null) ivSatelliteIcon.setImageDrawable(mIcon)
+                    else ivSatelliteIcon.setImageResource(R.drawable.app_logo)
+                    ivSatelliteIcon.clearColorFilter()
+                }
+                IslandLiveStore.mediaActive && isCharging -> {
+                    wantSat = true
+                    satMode = "charge"
+                    satStroke = Color.argb(210, 52, 211, 153)
+                    ivSatelliteIcon.setImageResource(R.drawable.ic_charging_bolt)
+                    ivSatelliteIcon.clearColorFilter()
+                }
+                IslandLiveStore.mediaActive && IslandLiveStore.secondaryMediaActive -> {
+                    wantSat = true
+                    satMode = "media2"
+                    satPkg = IslandLiveStore.secondaryMediaPackage
+                    val sIcon = loadAppIcon(satPkg)
+                    if (sIcon != null) ivSatelliteIcon.setImageDrawable(sIcon)
+                    else ivSatelliteIcon.setImageResource(R.drawable.app_logo)
+                    ivSatelliteIcon.clearColorFilter()
+                }
+                showNotif && isCharging -> {
+                    wantSat = true
+                    satMode = "charge"
+                    satStroke = Color.argb(210, 52, 211, 153)
+                    ivSatelliteIcon.setImageResource(R.drawable.ic_charging_bolt)
+                    ivSatelliteIcon.clearColorFilter()
+                }
+                IslandLiveStore.mediaActive && btOn -> {
+                    wantSat = true
+                    satMode = "bt"
+                    satStroke = Color.argb(180, 96, 165, 250)
+                    ivSatelliteIcon.setImageResource(R.drawable.ic_bluetooth_mini)
+                    ivSatelliteIcon.setColorFilter(Color.rgb(96, 165, 250))
+                }
             }
-            setColor(solidBg)
-            setStroke(dpToPx(1), strokeColor)
         }
-        pill.background = drawable
+        satelliteMode = satMode
+        satellitePackage = satPkg
+        if (wantSat) {
+            satelliteBubble.background = buildSurfaceDrawable(isCircle = true, strokeColor = satStroke, isCoverBar = false)
+            if (!satelliteVisible) {
+                satelliteVisible = true
+                satelliteBubble.visibility = View.VISIBLE
+                satelliteBubble.scaleX = 0.25f
+                satelliteBubble.scaleY = 0.25f
+                satelliteBubble.alpha = 0f
+                satelliteBubble.animate()
+                    .scaleX(1f).scaleY(1f).alpha(1f)
+                    .setDuration(360L)
+                    .setInterpolator(OvershootInterpolator(1.4f))
+                    .start()
+            }
+        } else if (satelliteVisible) {
+            satelliteVisible = false
+            satelliteBubble.animate().cancel()
+            satelliteBubble.visibility = View.GONE
+        }
 
         val targetWidth = when {
             isExpanded -> dpToPx(344)
-            settings.coverStatusBar -> ViewGroup.LayoutParams.MATCH_PARENT
+            isCoverBar -> ViewGroup.LayoutParams.MATCH_PARENT
+            wantSat -> dpToPx((settings.compactWidthDp - 34).coerceAtLeast(210))
             else -> dpToPx(settings.compactWidthDp)
         }
-        val targetMinHeight = if (settings.coverStatusBar && !isExpanded) {
+        val targetMinHeight = if (isCoverBar) {
             dpToPx(settings.barHeightDp.coerceIn(30, 58))
         } else {
             0
@@ -717,8 +1018,8 @@ class DynamicIslandService : Service() {
         }
         pill.minimumHeight = targetMinHeight
 
-        val pad = if (settings.coverStatusBar && !isExpanded) 0 else dpToPx(4)
-        view.setPadding(pad, if (settings.coverStatusBar && !isExpanded) 0 else pad, pad, pad)
+        val pad = if (isCoverBar) 0 else dpToPx(4)
+        view.setPadding(pad, if (isCoverBar) 0 else pad, pad, pad)
 
         val gapDp = settings.notchGapDp.coerceIn(22, 90)
         val gapPx = dpToPx(gapDp)
@@ -732,7 +1033,7 @@ class DynamicIslandService : Service() {
         tvCompactRightName.setTextColor(primaryText)
         tvExpandedTitle.setTextColor(primaryText)
         tvExpandedSub.setTextColor(mutedText)
-        tvExpandedMeta.setTextColor(if (isChargingAlert) Color.rgb(52, 211, 153) else mutedText)
+        tvExpandedMeta.setTextColor(if (isChargingAlert || isCharging) Color.rgb(52, 211, 153) else mutedText)
 
         ivBluetooth.visibility = if (settings.showStatusIcons && btOn) View.VISIBLE else View.GONE
         ivBluetooth.setColorFilter(Color.rgb(96, 165, 250))
@@ -756,18 +1057,16 @@ class DynamicIslandService : Service() {
             }
         )
 
-        val showNotif = IslandLiveStore.notifActive &&
-            (System.currentTimeMillis() - IslandLiveStore.notifTimestamp < 7000L)
-
         val now = Date()
         val timeFmt = SimpleDateFormat(if (settings.use24Hour) "HH:mm" else "hh:mm", Locale.ENGLISH)
         val fullTimeFmt = SimpleDateFormat(if (settings.use24Hour) "HH:mm" else "hh:mm a", Locale("ar"))
         val dateFmt = SimpleDateFormat("EEEE، d MMMM", Locale("ar"))
+        val wattTag = if (batt.watts > 0) " (${batt.watts}W)" else ""
         val statusSummary = buildString {
             append(if (hasWifi) "Wi-Fi" else if (hasCell) "بيانات" else "بدون نت")
             if (btOn) append(" • بلوتوث")
             if (silentOn) append(" • صامت")
-            append(" • ${if (isCharging) "⚡" else ""}$batteryPct%")
+            append(" • ${if (isCharging) "⚡" else ""}$batteryPct%$wattTag")
         }
 
         compactRow.visibility = if (isExpanded) View.GONE else View.VISIBLE
@@ -777,9 +1076,15 @@ class DynamicIslandService : Service() {
             isChargingAlert -> {
                 ivCompactIcon.setImageResource(R.drawable.ic_charging_bolt)
                 ivExpandedIcon.setImageResource(R.drawable.ic_charging_bolt)
-                tvCompactRightName.text = "جاري الشحن ⚡"
+                val chargeTitle = when {
+                    batt.watts >= 12 -> "شحن فائق سريع ⚡ ${batt.watts}W"
+                    batt.watts > 0 -> "جاري الشحن ⚡ ${batt.watts}W"
+                    batt.isFast -> "جاري الشحن السريع ⚡"
+                    else -> "جاري الشحن ⚡"
+                }
+                tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W ⚡" else "جاري الشحن ⚡"
                 tvCompactLeftStatus.text = "$batteryPct%"
-                tvExpandedTitle.text = "جاري الشحن السريع ⚡"
+                tvExpandedTitle.text = chargeTitle
                 tvExpandedSub.text = "نسبة البطارية الحالية: $batteryPct%"
                 tvExpandedMeta.text = statusSummary
                 mediaControls.visibility = View.GONE
@@ -826,9 +1131,15 @@ class DynamicIslandService : Service() {
             }
 
             else -> {
-                bindCrispAvatar(ivCompactIcon)
-                bindCrispAvatar(ivExpandedIcon)
-                tvCompactRightName.text = settings.userName
+                if (isCharging) {
+                    ivCompactIcon.setImageResource(R.drawable.ic_charging_bolt)
+                    ivExpandedIcon.setImageResource(R.drawable.ic_charging_bolt)
+                    tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W ⚡" else "شحن ⚡"
+                } else {
+                    bindCrispAvatar(ivCompactIcon)
+                    bindCrispAvatar(ivExpandedIcon)
+                    tvCompactRightName.text = settings.userName
+                }
                 tvCompactLeftStatus.text = timeFmt.format(now)
                 tvExpandedTitle.text = "${settings.userName} • ${fullTimeFmt.format(now)}"
                 tvExpandedSub.text = dateFmt.format(now)

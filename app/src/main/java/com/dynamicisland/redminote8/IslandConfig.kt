@@ -6,13 +6,17 @@ import android.graphics.Color
 data class IslandSettings(
     val enabled: Boolean = false,
     val cutoutType: String = "notch",
-    val coverStatusBar: Boolean = true,
+    val coverStatusBar: Boolean = false,
+    val hideInFullscreen: Boolean = true,
+    val glassEffectEnabled: Boolean = true,
+    val glassOpacityPercent: Int = 82,
+    val dualActivityEnabled: Boolean = true,
     val autoHideEnabled: Boolean = true,
     val autoHideSeconds: Int = 30,
     val notchGapDp: Int = 46,
     val barHeightDp: Int = 42,
-    val topOffsetDp: Int = 0,
-    val compactWidthDp: Int = 300,
+    val topOffsetDp: Int = 6,
+    val compactWidthDp: Int = 276,
     val cornerRadiusDp: Int = 24,
     val themeId: String = "black",
     val userName: String = "أنس محمد",
@@ -24,27 +28,34 @@ data class IslandSettings(
 )
 
 object IslandConfig {
-    private const val PREF_NAME = "dynamic_island_prefs_v5"
+    private const val PREF_NAME = "dynamic_island_prefs_v7"
+    private const val LEGACY_PREF = "dynamic_island_prefs_v5"
 
     fun load(context: Context): IslandSettings {
         val p = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val legacy = context.getSharedPreferences(LEGACY_PREF, Context.MODE_PRIVATE)
+        val hasV7 = p.contains("glassEffectEnabled")
         return IslandSettings(
-            enabled = p.getBoolean("enabled", false),
-            cutoutType = p.getString("cutoutType", "notch") ?: "notch",
-            coverStatusBar = p.getBoolean("coverStatusBar", true),
+            enabled = p.getBoolean("enabled", legacy.getBoolean("enabled", false)),
+            cutoutType = p.getString("cutoutType", legacy.getString("cutoutType", "notch")) ?: "notch",
+            coverStatusBar = if (hasV7) p.getBoolean("coverStatusBar", false) else false,
+            hideInFullscreen = p.getBoolean("hideInFullscreen", true),
+            glassEffectEnabled = p.getBoolean("glassEffectEnabled", true),
+            glassOpacityPercent = p.getInt("glassOpacityPercent", 82).coerceIn(40, 100),
+            dualActivityEnabled = p.getBoolean("dualActivityEnabled", true),
             autoHideEnabled = p.getBoolean("autoHideEnabled", true),
-            autoHideSeconds = p.getInt("autoHideSeconds", 30),
-            notchGapDp = p.getInt("notchGapDp", 46),
-            barHeightDp = p.getInt("barHeightDp", 42),
-            topOffsetDp = p.getInt("topOffsetDp", 0),
-            compactWidthDp = p.getInt("compactWidthDp", 300),
+            autoHideSeconds = p.getInt("autoHideSeconds", 30).coerceIn(5, 300),
+            notchGapDp = p.getInt("notchGapDp", legacy.getInt("notchGapDp", 46)),
+            barHeightDp = p.getInt("barHeightDp", legacy.getInt("barHeightDp", 42)),
+            topOffsetDp = if (hasV7) p.getInt("topOffsetDp", 6) else 6,
+            compactWidthDp = if (hasV7) p.getInt("compactWidthDp", 276) else 276,
             cornerRadiusDp = p.getInt("cornerRadiusDp", 24),
-            themeId = p.getString("themeId", "black") ?: "black",
-            userName = p.getString("userName", "أنس محمد") ?: "أنس محمد",
-            avatarUri = p.getString("avatarUri", null),
-            use24Hour = p.getBoolean("use24Hour", false),
+            themeId = p.getString("themeId", legacy.getString("themeId", "black")) ?: "black",
+            userName = p.getString("userName", legacy.getString("userName", "أنس محمد")) ?: "أنس محمد",
+            avatarUri = p.getString("avatarUri", legacy.getString("avatarUri", null)),
+            use24Hour = p.getBoolean("use24Hour", legacy.getBoolean("use24Hour", false)),
             showStatusIcons = p.getBoolean("showStatusIcons", true),
-            githubRepo = p.getString("githubRepo", "") ?: "",
+            githubRepo = p.getString("githubRepo", legacy.getString("githubRepo", "")) ?: "",
             autoCheckUpdate = p.getBoolean("autoCheckUpdate", true)
         )
     }
@@ -54,8 +65,12 @@ object IslandConfig {
             .putBoolean("enabled", s.enabled)
             .putString("cutoutType", s.cutoutType)
             .putBoolean("coverStatusBar", s.coverStatusBar)
+            .putBoolean("hideInFullscreen", s.hideInFullscreen)
+            .putBoolean("glassEffectEnabled", s.glassEffectEnabled)
+            .putInt("glassOpacityPercent", s.glassOpacityPercent.coerceIn(40, 100))
+            .putBoolean("dualActivityEnabled", s.dualActivityEnabled)
             .putBoolean("autoHideEnabled", s.autoHideEnabled)
-            .putInt("autoHideSeconds", s.autoHideSeconds)
+            .putInt("autoHideSeconds", s.autoHideSeconds.coerceIn(5, 300))
             .putInt("notchGapDp", s.notchGapDp)
             .putInt("barHeightDp", s.barHeightDp)
             .putInt("topOffsetDp", s.topOffsetDp)
@@ -73,10 +88,21 @@ object IslandConfig {
 
     fun themeSolidColor(themeId: String): Int {
         return when (themeId) {
-            "charcoal" -> Color.rgb(18, 22, 30)
-            "navy" -> Color.rgb(8, 18, 38)
-            "light" -> Color.rgb(245, 247, 250)
-            else -> Color.BLACK
+            "charcoal" -> Color.rgb(20, 25, 36)
+            "navy" -> Color.rgb(10, 22, 48)
+            "light" -> Color.rgb(245, 248, 252)
+            else -> Color.rgb(8, 10, 15)
+        }
+    }
+
+    fun themeGlassColors(themeId: String, opacityPercent: Int): IntArray {
+        val alphaTop = ((opacityPercent.coerceIn(40, 100) / 100f) * 255f).toInt().coerceIn(90, 255)
+        val alphaBot = (alphaTop + 20).coerceIn(105, 255)
+        return when (themeId) {
+            "charcoal" -> intArrayOf(Color.argb(alphaTop, 30, 38, 54), Color.argb(alphaBot, 14, 18, 28))
+            "navy" -> intArrayOf(Color.argb(alphaTop, 16, 36, 74), Color.argb(alphaBot, 7, 16, 38))
+            "light" -> intArrayOf(Color.argb(alphaTop, 250, 252, 255), Color.argb(alphaBot, 232, 240, 250))
+            else -> intArrayOf(Color.argb(alphaTop, 18, 22, 32), Color.argb(alphaBot, 4, 6, 10))
         }
     }
 

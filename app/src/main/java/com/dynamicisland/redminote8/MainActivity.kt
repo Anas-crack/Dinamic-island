@@ -77,16 +77,25 @@ class MainActivity : AppCompatActivity() {
         val btnAppInfoPerm = findViewById<Button>(R.id.btnAppInfoRestricted)
         val btnTestIsland = findViewById<Button>(R.id.btnTestIsland)
         val btnTestAnim = findViewById<Button>(R.id.btnTestAnim)
+        val btnTestDual = findViewById<Button>(R.id.btnTestDual)
+        val btnTestCharge = findViewById<Button>(R.id.btnTestCharge)
         val btnPickAvatar = findViewById<Button>(R.id.btnPickAvatar)
 
         val rgCutout = findViewById<RadioGroup>(R.id.rgCutoutType)
         val switchCoverBar = findViewById<Switch>(R.id.switchCoverStatusBar)
+        val switchHideFullscreen = findViewById<Switch>(R.id.switchHideFullscreen)
+        val switchDualActivity = findViewById<Switch>(R.id.switchDualActivity)
+        val switchGlassBlur = findViewById<Switch>(R.id.switchGlassBlur)
+        val seekGlassOpacity = findViewById<SeekBar>(R.id.seekGlassOpacity)
+        val tvGlassOpacityVal = findViewById<TextView>(R.id.tvGlassOpacityVal)
         val switchAutoHide = findViewById<Switch>(R.id.switchAutoHide)
         val switchStatusIcons = findViewById<Switch>(R.id.switchStatusIcons)
 
         val seekAutoHideSec = findViewById<SeekBar>(R.id.seekAutoHideSec)
         val tvAutoHideVal = findViewById<TextView>(R.id.tvAutoHideVal)
         val rgHidePresets = findViewById<RadioGroup>(R.id.rgHidePresets)
+        val etAutoHideSec = findViewById<EditText>(R.id.etAutoHideSec)
+        val btnApplyAutoHide = findViewById<Button>(R.id.btnApplyAutoHide)
 
         val seekNotchGap = findViewById<SeekBar>(R.id.seekNotchGap)
         val tvNotchGapVal = findViewById<TextView>(R.id.tvNotchGapVal)
@@ -105,7 +114,7 @@ class MainActivity : AppCompatActivity() {
         val switchAutoUpdate = findViewById<Switch>(R.id.switchAutoUpdate)
         val btnCheckUpdate = findViewById<Button>(R.id.btnCheckUpdate)
 
-        tvVersionBadge.text = "v${BuildConfig.VERSION_NAME} • Solid OLED + Spring"
+        tvVersionBadge.text = "v${BuildConfig.VERSION_NAME} • Glass Blur + Dual Pill"
         tvDevVersion.text = "تطبيق Dynamic Island — الإصدار v${BuildConfig.VERSION_NAME}"
         switchEnable.isChecked = DynamicIslandService.isRunning
 
@@ -113,17 +122,23 @@ class MainActivity : AppCompatActivity() {
         else rgCutout.check(R.id.rbWaterdropNotch)
 
         switchCoverBar.isChecked = settings.coverStatusBar
+        switchHideFullscreen.isChecked = settings.hideInFullscreen
+        switchDualActivity.isChecked = settings.dualActivityEnabled
+        switchGlassBlur.isChecked = settings.glassEffectEnabled
+        seekGlassOpacity.progress = (settings.glassOpacityPercent - 40).coerceIn(0, 60)
+        tvGlassOpacityVal.text = "${settings.glassOpacityPercent}%"
         switchAutoHide.isChecked = settings.autoHideEnabled
         switchStatusIcons.isChecked = settings.showStatusIcons
 
         fun formatHideLabel(sec: Int): String = if (sec == 60) "دقيقة (60 ث)" else "$sec ثانية"
-        seekAutoHideSec.progress = (settings.autoHideSeconds - 10).coerceIn(0, 110)
+        seekAutoHideSec.progress = (settings.autoHideSeconds - 5).coerceIn(0, 115)
         tvAutoHideVal.text = formatHideLabel(settings.autoHideSeconds)
+        etAutoHideSec.setText(settings.autoHideSeconds.toString())
         when (settings.autoHideSeconds) {
-            20 -> rgHidePresets.check(R.id.rbHide20)
+            5 -> rgHidePresets.check(R.id.rbHide5)
+            15 -> rgHidePresets.check(R.id.rbHide15)
             30 -> rgHidePresets.check(R.id.rbHide30)
-            40 -> rgHidePresets.check(R.id.rbHide40)
-            50 -> rgHidePresets.check(R.id.rbHide50)
+            45 -> rgHidePresets.check(R.id.rbHide45)
             60 -> rgHidePresets.check(R.id.rbHide60)
         }
 
@@ -165,6 +180,28 @@ class MainActivity : AppCompatActivity() {
             saveAndNotify()
         }
 
+        switchHideFullscreen.setOnCheckedChangeListener { _, isChecked ->
+            settings = settings.copy(hideInFullscreen = isChecked)
+            saveAndNotify()
+        }
+
+        switchDualActivity.setOnCheckedChangeListener { _, isChecked ->
+            settings = settings.copy(dualActivityEnabled = isChecked)
+            saveAndNotify()
+        }
+
+        switchGlassBlur.setOnCheckedChangeListener { _, isChecked ->
+            settings = settings.copy(glassEffectEnabled = isChecked)
+            saveAndNotify()
+        }
+
+        seekGlassOpacity.setOnSeekBarChangeListener(simpleSeek { p ->
+            val pct = (40 + p).coerceIn(40, 100)
+            settings = settings.copy(glassOpacityPercent = pct)
+            tvGlassOpacityVal.text = "$pct%"
+            saveAndNotify()
+        })
+
         switchAutoHide.setOnCheckedChangeListener { _, isChecked ->
             settings = settings.copy(autoHideEnabled = isChecked)
             saveAndNotify()
@@ -172,27 +209,46 @@ class MainActivity : AppCompatActivity() {
 
         rgHidePresets.setOnCheckedChangeListener { _, checkedId ->
             val sec = when (checkedId) {
-                R.id.rbHide20 -> 20
+                R.id.rbHide5 -> 5
+                R.id.rbHide15 -> 15
                 R.id.rbHide30 -> 30
-                R.id.rbHide40 -> 40
-                R.id.rbHide50 -> 50
+                R.id.rbHide45 -> 45
                 R.id.rbHide60 -> 60
                 else -> settings.autoHideSeconds
             }
             settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
             switchAutoHide.isChecked = true
-            seekAutoHideSec.progress = (sec - 10).coerceIn(0, 110)
+            seekAutoHideSec.progress = (sec - 5).coerceIn(0, 115)
             tvAutoHideVal.text = formatHideLabel(sec)
+            etAutoHideSec.setText(sec.toString())
             saveAndNotify()
         }
 
         seekAutoHideSec.setOnSeekBarChangeListener(simpleSeek { p ->
-            val sec = 10 + p
+            val sec = (5 + p).coerceIn(5, 120)
             settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
             switchAutoHide.isChecked = true
             tvAutoHideVal.text = formatHideLabel(sec)
+            etAutoHideSec.setText(sec.toString())
             saveAndNotify()
         })
+
+        btnApplyAutoHide.setOnClickListener {
+            val raw = etAutoHideSec.text.toString().trim().toIntOrNull()
+            if (raw == null || raw < 5) {
+                Toast.makeText(this, "أقل وقت مسموح هو 5 ثواني", Toast.LENGTH_SHORT).show()
+                etAutoHideSec.setText("5")
+                return@setOnClickListener
+            }
+            val sec = raw.coerceIn(5, 300)
+            settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
+            switchAutoHide.isChecked = true
+            seekAutoHideSec.progress = (sec - 5).coerceIn(0, 115)
+            tvAutoHideVal.text = formatHideLabel(sec)
+            etAutoHideSec.setText(sec.toString())
+            saveAndNotify()
+            Toast.makeText(this, "تم ضبط الاختفاء التلقائي على $sec ثانية", Toast.LENGTH_SHORT).show()
+        }
 
         switchStatusIcons.setOnCheckedChangeListener { _, isChecked ->
             settings = settings.copy(showStatusIcons = isChecked)
@@ -248,6 +304,22 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_ANIM).setPackage(packageName))
+        }
+
+        btnTestDual.setOnClickListener {
+            if (!DynamicIslandService.isRunning) {
+                Toast.makeText(this, "شغّل مفتاح الجزيرة العائمة أولًا بالأعلى", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_DUAL).setPackage(packageName))
+        }
+
+        btnTestCharge.setOnClickListener {
+            if (!DynamicIslandService.isRunning) {
+                Toast.makeText(this, "شغّل مفتاح الجزيرة العائمة أولًا بالأعلى", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_CHARGE).setPackage(packageName))
         }
 
         btnPickAvatar.setOnClickListener {
