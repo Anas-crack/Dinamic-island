@@ -34,6 +34,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.app.usage.UsageStatsManager
+import android.graphics.Canvas
+import android.hardware.camera2.CameraManager
+import android.media.AudioRecordingConfiguration
+import android.service.notification.NotificationListenerService
 import android.telecom.TelecomManager
 import android.transition.AutoTransition
 import android.transition.TransitionManager
@@ -83,6 +88,7 @@ class DynamicIslandService : Service() {
         const val ACTION_NEW_NOTIF = "com.dynamicisland.redminote8.ACTION_NEW_NOTIF"
         const val ACTION_CALL_UPDATE = "com.dynamicisland.redminote8.ACTION_CALL_UPDATE"
         const val ACTION_TEST_CALL = "com.dynamicisland.redminote8.ACTION_TEST_CALL"
+        const val ACTION_TEST_PRIVACY = "com.dynamicisland.redminote8.ACTION_TEST_PRIVACY"
         private const val CHANNEL_ID = "dynamic_island_overlay_channel"
         private const val NOTIF_ID = 8008
         @Volatile var isRunning: Boolean = false
@@ -98,6 +104,51 @@ class DynamicIslandService : Service() {
     private var hiddenByFullscreen: Boolean = false
     private var fullscreenStreak: Int = 0
     private var wasFallbackAudioPlaying: Boolean = false
+    private var lastSeenNotifVersion: Long = 0L
+    private var isCameraActive: Boolean = false
+    private var isMicActive: Boolean = false
+    private var privacyDemoUntil: Long = 0L
+    private val activeCameraIds = mutableSetOf<String>()
+    private val appIconCache = HashMap<String, Bitmap>()
+    private var cameraManager: CameraManager? = null
+    private var audioManagerRef: AudioManager? = null
+
+    private val cameraCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraUnavailable(cameraId: String) {
+            activeCameraIds.add(cameraId)
+            val was = isCameraActive
+            isCameraActive = true
+            if (!was) {
+                handler.post {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    updateIslandUi()
+                }
+            }
+        }
+        override fun onCameraAvailable(cameraId: String) {
+            activeCameraIds.remove(cameraId)
+            isCameraActive = activeCameraIds.isNotEmpty()
+            handler.post { updateIslandUi() }
+        }
+    }
+
+    private val micCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>?) {
+            val nowMic = !configs.isNullOrEmpty()
+            val was = isMicActive
+            isMicActive = nowMic
+            if (nowMic && !was) {
+                handler.post {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    updateIslandUi()
+                }
+            } else {
+                handler.post { updateIslandUi() }
+            }
+        }
+    }
     private var lastActivityTime: Long = System.currentTimeMillis()
     private var wasCharging: Boolean = false
     private var chargingPopupUntil: Long = 0L
@@ -112,12 +163,18 @@ class DynamicIslandService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val clockTicker = object : Runnable {
         override fun run() {
+            if (IslandLiveStore.notifVersion != lastSeenNotifVersion && IslandLiveStore.notifActive) {
+                lastSeenNotifVersion = IslandLiveStore.notifVersion
+                hiddenByFullscreen = false
+                wakeUpIsland(forceAnim = true)
+                setExpanded(true)
+            }
             pollActiveMediaSessions()
             checkSystemCallState()
             checkChargingTransition()
             evaluateFullscreenAndAutoHide()
             updateIslandUi()
-            handler.postDelayed(this, 750L)
+            handler.postDelayed(this, 650L)
         }
     }
 
@@ -158,6 +215,12 @@ class DynamicIslandService : Service() {
                     updateIslandUi()
                 }
                 ACTION_CALL_UPDATE -> {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    updateIslandUi()
+                }
+                ACTION_TEST_PRIVACY -> {
+                    privacyDemoUntil = System.currentTimeMillis() + 8000L
                     hiddenByFullscreen = false
                     wakeUpIsland(forceAnim = true)
                     updateIslandUi()
@@ -273,6 +336,7 @@ class DynamicIslandService : Service() {
             addAction(ACTION_NEW_NOTIF)
             addAction(ACTION_CALL_UPDATE)
             addAction(ACTION_TEST_CALL)
+            addAction(ACTION_TEST_PRIVACY)
         }
         val sysFilter = IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
@@ -291,6 +355,9 @@ class DynamicIslandService : Service() {
             registerReceiver(systemReceiver, sysFilter)
         }
 
+        registerPrivacySensors()
+        tryRebindNotificationListener()
+        lastSeenNotifVersion = IslandLiveStore.notifVersion
         wakeUpIsland(forceAnim = true)
         handler.post(clockTicker)
     }
@@ -313,6 +380,7 @@ class DynamicIslandService : Service() {
     override fun onDestroy() {
         isRunning = false
         handler.removeCallbacks(clockTicker)
+        unregisterPrivacySensors()
         try { unregisterReceiver(appReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(systemReceiver) } catch (_: Exception) {}
         rootView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
@@ -437,7 +505,8 @@ class DynamicIslandService : Service() {
             (settings.keepNotifUntilRead || (now - IslandLiveStore.notifTimestamp < 7000L))
         val hasCharging = now < chargingPopupUntil
         val hasDualDemo = now < dualDemoUntil
-        val isBusy = isExpanded || IslandLiveStore.callActive || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging || hasDualDemo
+        val hasPrivacy = isCameraActive || isMicActive || (now < privacyDemoUntil)
+        val isBusy = isExpanded || IslandLiveStore.callActive || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging || hasDualDemo || hasPrivacy
 
         if (isBusy) {
             wakeUpIsland(forceAnim = false)
@@ -461,6 +530,53 @@ class DynamicIslandService : Service() {
                     setExpanded(false)
                 }
             }, 7100L)
+        }
+    }
+
+    private fun registerPrivacySensors() {
+        try {
+            cameraManager = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+            cameraManager?.registerAvailabilityCallback(cameraCallback, handler)
+        } catch (_: Exception) {
+        }
+        try {
+            audioManagerRef = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManagerRef?.registerAudioRecordingCallback(micCallback, handler)
+            isMicActive = !(audioManagerRef?.activeRecordingConfigurations.isNullOrEmpty())
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun unregisterPrivacySensors() {
+        try { cameraManager?.unregisterAvailabilityCallback(cameraCallback) } catch (_: Exception) {}
+        try { audioManagerRef?.unregisterAudioRecordingCallback(micCallback) } catch (_: Exception) {}
+    }
+
+    private fun tryRebindNotificationListener() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                if (NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)) {
+                    NotificationListenerService.requestRebind(
+                        ComponentName(this, IslandNotificationListener::class.java)
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun getForegroundAppPackage(): String {
+        return try {
+            val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return ""
+            val end = System.currentTimeMillis()
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, end - 60_000L, end)
+            if (stats.isNullOrEmpty()) return ""
+            val recent = stats
+                .filter { it.packageName != packageName && !it.packageName.contains("launcher") && !it.packageName.contains("systemui") }
+                .maxByOrNull { it.lastTimeUsed }
+            recent?.packageName ?: ""
+        } catch (_: Exception) {
+            ""
         }
     }
 
@@ -643,7 +759,12 @@ class DynamicIslandService : Service() {
                 IslandLiveStore.activeController = null
                 IslandLiveStore.mediaActive = true
                 IslandLiveStore.mediaPlaying = true
-                val fallbackPkg = IslandLiveStore.lastNotifMediaPackage.ifBlank { IslandLiveStore.mediaPackage }
+                val fgPkg = getForegroundAppPackage()
+                val fallbackPkg = when {
+                    fgPkg.isNotBlank() -> fgPkg
+                    IslandLiveStore.lastNotifMediaPackage.isNotBlank() -> IslandLiveStore.lastNotifMediaPackage
+                    else -> IslandLiveStore.mediaPackage
+                }
                 if (fallbackPkg.isNotBlank()) {
                     IslandLiveStore.mediaPackage = fallbackPkg
                     IslandLiveStore.mediaTitle = getFriendlyAppName(fallbackPkg)
@@ -1081,6 +1202,8 @@ class DynamicIslandService : Service() {
         val expandedVortex = view.findViewById<ChargingVortexBatteryView>(R.id.expandedVortexBattery)
         val notchCenterGap = view.findViewById<Space>(R.id.notchCenterGap)
 
+        val ivCamActive = view.findViewById<ImageView>(R.id.ivCamActive)
+        val ivMicActive = view.findViewById<ImageView>(R.id.ivMicActive)
         val ivBluetooth = view.findViewById<ImageView>(R.id.ivBluetooth)
         val ivSilent = view.findViewById<ImageView>(R.id.ivSilent)
         val ivWifi = view.findViewById<ImageView>(R.id.ivWifi)
@@ -1141,8 +1264,8 @@ class DynamicIslandService : Service() {
                     wantSat = true
                     satMode = "media2"
                     satPkg = IslandLiveStore.mediaPackage
-                    val mIcon = loadAppIcon(IslandLiveStore.mediaPackage)
-                    if (mIcon != null) ivSatelliteIcon.setImageDrawable(mIcon)
+                    val mIcon = loadAppIconBitmap(IslandLiveStore.mediaPackage)
+                    if (mIcon != null) ivSatelliteIcon.setImageBitmap(mIcon)
                     else ivSatelliteIcon.setImageResource(R.drawable.app_logo)
                     ivSatelliteIcon.clearColorFilter()
                 }
@@ -1157,8 +1280,8 @@ class DynamicIslandService : Service() {
                     wantSat = true
                     satMode = "media2"
                     satPkg = IslandLiveStore.secondaryMediaPackage
-                    val sIcon = loadAppIcon(satPkg)
-                    if (sIcon != null) ivSatelliteIcon.setImageDrawable(sIcon)
+                    val sIcon = loadAppIconBitmap(satPkg)
+                    if (sIcon != null) ivSatelliteIcon.setImageBitmap(sIcon)
                     else ivSatelliteIcon.setImageResource(R.drawable.app_logo)
                     ivSatelliteIcon.clearColorFilter()
                 }
@@ -1235,6 +1358,10 @@ class DynamicIslandService : Service() {
         tvExpandedSub.setTextColor(mutedText)
         tvExpandedMeta.setTextColor(if (isChargingAlert || isCharging) Color.rgb(52, 211, 153) else mutedText)
 
+        val camLive = isCameraActive || (nowMs < privacyDemoUntil)
+        val micLive = isMicActive || (nowMs < privacyDemoUntil)
+        ivCamActive.visibility = if (camLive) View.VISIBLE else View.GONE
+        ivMicActive.visibility = if (micLive) View.VISIBLE else View.GONE
         ivBluetooth.visibility = if (settings.showStatusIcons && btOn) View.VISIBLE else View.GONE
         ivBluetooth.setColorFilter(Color.rgb(96, 165, 250))
 
@@ -1264,6 +1391,8 @@ class DynamicIslandService : Service() {
         val wattTag = if (batt.watts > 0) " (${batt.watts}W)" else ""
         val statusSummary = buildString {
             append(if (hasWifi) "Wi-Fi" else if (hasCell) "بيانات" else "بدون نت")
+            if (camLive) append(" • 📷 كاميرا نشطة")
+            if (micLive) append(" • 🎙️ مايك نشط")
             if (btOn) append(" • بلوتوث")
             if (silentOn) append(" • صامت")
             append(" • ${if (isCharging) "⚡" else ""}$batteryPct%$wattTag")
@@ -1296,10 +1425,10 @@ class DynamicIslandService : Service() {
             IslandLiveStore.callActive -> {
                 showVortex(false)
                 val callTimer = formatCallDuration(IslandLiveStore.callStartTime)
-                val callAppIcon = loadAppIcon(IslandLiveStore.callPackage)
+                val callAppIcon = loadAppIconBitmap(IslandLiveStore.callPackage)
                 if (callAppIcon != null && IslandLiveStore.callPackage != packageName) {
-                    ivCompactIcon.setImageDrawable(callAppIcon)
-                    ivExpandedIcon.setImageDrawable(callAppIcon)
+                    ivCompactIcon.setImageBitmap(callAppIcon)
+                    ivExpandedIcon.setImageBitmap(callAppIcon)
                 } else {
                     ivCompactIcon.setImageResource(R.drawable.ic_call_live)
                     ivExpandedIcon.setImageResource(R.drawable.ic_call_live)
@@ -1338,10 +1467,10 @@ class DynamicIslandService : Service() {
             showNotif -> {
                 showVortex(false)
                 callActionsRow.visibility = View.GONE
-                val appIcon = loadAppIcon(IslandLiveStore.notifPackage)
+                val appIcon = loadAppIconBitmap(IslandLiveStore.notifPackage)
                 val largeBmp = IslandLiveStore.notifLargeIcon
                 if (appIcon != null) {
-                    ivCompactIcon.setImageDrawable(appIcon)
+                    ivCompactIcon.setImageBitmap(appIcon)
                 } else if (largeBmp != null) {
                     ivCompactIcon.setImageBitmap(largeBmp)
                 } else {
@@ -1350,7 +1479,7 @@ class DynamicIslandService : Service() {
                 if (largeBmp != null) {
                     ivExpandedIcon.setImageBitmap(largeBmp)
                 } else if (appIcon != null) {
-                    ivExpandedIcon.setImageDrawable(appIcon)
+                    ivExpandedIcon.setImageBitmap(appIcon)
                 } else {
                     ivExpandedIcon.setImageResource(R.drawable.app_logo)
                 }
@@ -1371,14 +1500,14 @@ class DynamicIslandService : Service() {
             IslandLiveStore.mediaActive -> {
                 showVortex(false)
                 callActionsRow.visibility = View.GONE
-                val appIcon = loadAppIcon(IslandLiveStore.mediaPackage)
+                val appIcon = loadAppIconBitmap(IslandLiveStore.mediaPackage)
                 val art = IslandLiveStore.mediaArt
-                if (appIcon != null) ivCompactIcon.setImageDrawable(appIcon)
+                if (appIcon != null) ivCompactIcon.setImageBitmap(appIcon)
                 else if (art != null) ivCompactIcon.setImageBitmap(art)
                 else ivCompactIcon.setImageResource(R.drawable.ic_media_wave)
 
                 if (art != null) ivExpandedIcon.setImageBitmap(art)
-                else if (appIcon != null) ivExpandedIcon.setImageDrawable(appIcon)
+                else if (appIcon != null) ivExpandedIcon.setImageBitmap(appIcon)
                 else ivExpandedIcon.setImageResource(R.drawable.ic_media_wave)
 
                 tvCompactRightName.text = IslandLiveStore.mediaTitle
@@ -1424,10 +1553,18 @@ class DynamicIslandService : Service() {
         }
     }
 
-    private fun loadAppIcon(pkg: String): android.graphics.drawable.Drawable? {
+    private fun loadAppIconBitmap(pkg: String): Bitmap? {
         if (pkg.isBlank()) return null
+        appIconCache[pkg]?.let { return it }
         return try {
-            packageManager.getApplicationIcon(pkg)
+            val d = packageManager.getApplicationIcon(pkg)
+            val size = 128
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            d.setBounds(0, 0, size, size)
+            d.draw(canvas)
+            appIconCache[pkg] = bmp
+            bmp
         } catch (_: Exception) {
             null
         }

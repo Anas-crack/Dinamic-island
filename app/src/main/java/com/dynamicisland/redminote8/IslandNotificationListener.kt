@@ -35,6 +35,8 @@ object IslandLiveStore {
     @Volatile var notifContentIntent: PendingIntent? = null
     @Volatile var notifPlayAction: PendingIntent? = null
     @Volatile var notifLargeIcon: Bitmap? = null
+    @Volatile var notifVersion: Long = 0L
+    @Volatile var listenerConnected: Boolean = false
 
     @Volatile var secondaryMediaActive: Boolean = false
     @Volatile var secondaryMediaPackage: String = ""
@@ -72,6 +74,7 @@ class IslandNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        IslandLiveStore.listenerConnected = true
         try {
             mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
             val comp = ComponentName(this, IslandNotificationListener::class.java)
@@ -81,7 +84,13 @@ class IslandNotificationListener : NotificationListenerService() {
         }
     }
 
+    override fun onListenerDisconnected() {
+        IslandLiveStore.listenerConnected = false
+        super.onListenerDisconnected()
+    }
+
     override fun onDestroy() {
+        IslandLiveStore.listenerConnected = false
         try {
             currentController?.unregisterCallback(controllerCallback)
             mediaSessionManager?.removeOnActiveSessionsChangedListener(sessionListener)
@@ -225,8 +234,9 @@ class IslandNotificationListener : NotificationListenerService() {
         }
 
         if ((notif.flags and Notification.FLAG_ONGOING_EVENT) != 0) return
+        if ((notif.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
 
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
         val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
             ?.mapNotNull { it?.toString()?.trim() }
@@ -235,7 +245,26 @@ class IslandNotificationListener : NotificationListenerService() {
             ?.joinToString(" • ")
             .orEmpty()
         val shortText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+
+        // Parse MessagingStyle EXTRA_MESSAGES (WhatsApp, Messenger, Telegram, SMS!)
+        var msgStyleText = ""
+        var msgStyleSender = ""
+        try {
+            @Suppress("DEPRECATION")
+            val msgArr = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+            if (msgArr != null && msgArr.isNotEmpty()) {
+                val lastBundle = msgArr.last() as? android.os.Bundle
+                if (lastBundle != null) {
+                    msgStyleText = lastBundle.getCharSequence("text")?.toString()?.trim().orEmpty()
+                    msgStyleSender = lastBundle.getCharSequence("sender")?.toString()?.trim().orEmpty()
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        if (title.isBlank() && msgStyleSender.isNotBlank()) title = msgStyleSender
         val finalText = when {
+            msgStyleText.isNotEmpty() -> msgStyleText
             bigText.isNotEmpty() -> bigText
             lines.isNotEmpty() -> lines
             else -> shortText
@@ -283,6 +312,7 @@ class IslandNotificationListener : NotificationListenerService() {
         IslandLiveStore.notifContentIntent = notif.contentIntent
         IslandLiveStore.notifPlayAction = playPending
         IslandLiveStore.notifLargeIcon = largeBmp
+        IslandLiveStore.notifVersion = IslandLiveStore.notifVersion + 1L
 
         notifyIslandService(DynamicIslandService.ACTION_NEW_NOTIF)
     }

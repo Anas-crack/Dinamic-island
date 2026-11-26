@@ -10,6 +10,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.app.usage.UsageStatsManager
+import android.graphics.Canvas
+import android.hardware.camera2.CameraManager
+import android.media.AudioRecordingConfiguration
+import android.service.notification.NotificationListenerService
 import android.telecom.TelecomManager
 import android.text.Editable
 import android.text.TextWatcher
@@ -86,6 +91,8 @@ class MainActivity : AppCompatActivity() {
         val btnTestDual = findViewById<Button>(R.id.btnTestDual)
         val btnTestCharge = findViewById<Button>(R.id.btnTestCharge)
         val btnTestCall = findViewById<Button>(R.id.btnTestCall)
+        val btnTestPrivacy = findViewById<Button>(R.id.btnTestPrivacy)
+        val btnUsagePerm = findViewById<Button>(R.id.btnUsagePermission)
         val btnPickAvatar = findViewById<Button>(R.id.btnPickAvatar)
 
         val rgCutout = findViewById<RadioGroup>(R.id.rgCutoutType)
@@ -356,6 +363,22 @@ class MainActivity : AppCompatActivity() {
             sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_CALL).setPackage(packageName))
         }
 
+        btnTestPrivacy.setOnClickListener {
+            if (!DynamicIslandService.isRunning) {
+                Toast.makeText(this, "شغّل مفتاح الجزيرة العائمة أولًا بالأعلى", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_PRIVACY).setPackage(packageName))
+        }
+
+        btnUsagePerm.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
+        }
+
         btnPickAvatar.setOnClickListener {
             pickAvatarLauncher.launch(arrayOf("image/*"))
         }
@@ -438,6 +461,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
+        ) {
+            try {
+                android.service.notification.NotificationListenerService.requestRebind(
+                    android.content.ComponentName(this, IslandNotificationListener::class.java)
+                )
+            } catch (_: Exception) {
+            }
+        }
         refreshPermissionBadges()
     }
 

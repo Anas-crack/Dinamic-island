@@ -9,6 +9,11 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.app.usage.UsageStatsManager
+import android.graphics.Canvas
+import android.hardware.camera2.CameraManager
+import android.media.AudioRecordingConfiguration
+import android.service.notification.NotificationListenerService
 import android.telecom.TelecomManager
 import android.widget.Toast
 import androidx.core.content.FileProvider
