@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.telecom.TelecomManager
 import android.text.Editable
 import android.text.TextWatcher
 import android.widget.Button
@@ -57,12 +58,17 @@ class MainActivity : AppCompatActivity() {
 
         settings = IslandConfig.load(this)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        val permsToAsk = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) permsToAsk.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED)
+            permsToAsk.add(Manifest.permission.READ_PHONE_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED
+        ) permsToAsk.add(Manifest.permission.ANSWER_PHONE_CALLS)
+        if (permsToAsk.isNotEmpty()) {
+            requestPermissions(permsToAsk.toTypedArray(), 901)
         }
 
         val tvVersionBadge = findViewById<TextView>(R.id.tvVersionBadge)
@@ -79,6 +85,7 @@ class MainActivity : AppCompatActivity() {
         val btnTestAnim = findViewById<Button>(R.id.btnTestAnim)
         val btnTestDual = findViewById<Button>(R.id.btnTestDual)
         val btnTestCharge = findViewById<Button>(R.id.btnTestCharge)
+        val btnTestCall = findViewById<Button>(R.id.btnTestCall)
         val btnPickAvatar = findViewById<Button>(R.id.btnPickAvatar)
 
         val rgCutout = findViewById<RadioGroup>(R.id.rgCutoutType)
@@ -88,6 +95,8 @@ class MainActivity : AppCompatActivity() {
         val switchGlassBlur = findViewById<Switch>(R.id.switchGlassBlur)
         val seekGlassOpacity = findViewById<SeekBar>(R.id.seekGlassOpacity)
         val tvGlassOpacityVal = findViewById<TextView>(R.id.tvGlassOpacityVal)
+        val switchKeepNotifOpen = findViewById<Switch>(R.id.switchKeepNotifOpen)
+        val switchAlwaysOn = findViewById<Switch>(R.id.switchAlwaysOn)
         val switchAutoHide = findViewById<Switch>(R.id.switchAutoHide)
         val switchStatusIcons = findViewById<Switch>(R.id.switchStatusIcons)
 
@@ -127,6 +136,8 @@ class MainActivity : AppCompatActivity() {
         switchGlassBlur.isChecked = settings.glassEffectEnabled
         seekGlassOpacity.progress = (settings.glassOpacityPercent - 40).coerceIn(0, 60)
         tvGlassOpacityVal.text = "${settings.glassOpacityPercent}%"
+        switchKeepNotifOpen.isChecked = settings.keepNotifUntilRead
+        switchAlwaysOn.isChecked = !settings.autoHideEnabled
         switchAutoHide.isChecked = settings.autoHideEnabled
         switchStatusIcons.isChecked = settings.showStatusIcons
 
@@ -202,8 +213,20 @@ class MainActivity : AppCompatActivity() {
             saveAndNotify()
         })
 
+        switchKeepNotifOpen.setOnCheckedChangeListener { _, isChecked ->
+            settings = settings.copy(keepNotifUntilRead = isChecked)
+            saveAndNotify()
+        }
+
+        switchAlwaysOn.setOnCheckedChangeListener { _, isChecked ->
+            settings = settings.copy(autoHideEnabled = !isChecked)
+            if (switchAutoHide.isChecked == isChecked) switchAutoHide.isChecked = !isChecked
+            saveAndNotify()
+        }
+
         switchAutoHide.setOnCheckedChangeListener { _, isChecked ->
             settings = settings.copy(autoHideEnabled = isChecked)
+            if (switchAlwaysOn.isChecked == isChecked) switchAlwaysOn.isChecked = !isChecked
             saveAndNotify()
         }
 
@@ -218,6 +241,7 @@ class MainActivity : AppCompatActivity() {
             }
             settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
             switchAutoHide.isChecked = true
+            switchAlwaysOn.isChecked = false
             seekAutoHideSec.progress = (sec - 5).coerceIn(0, 115)
             tvAutoHideVal.text = formatHideLabel(sec)
             etAutoHideSec.setText(sec.toString())
@@ -228,6 +252,7 @@ class MainActivity : AppCompatActivity() {
             val sec = (5 + p).coerceIn(5, 120)
             settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
             switchAutoHide.isChecked = true
+            switchAlwaysOn.isChecked = false
             tvAutoHideVal.text = formatHideLabel(sec)
             etAutoHideSec.setText(sec.toString())
             saveAndNotify()
@@ -243,6 +268,7 @@ class MainActivity : AppCompatActivity() {
             val sec = raw.coerceIn(5, 300)
             settings = settings.copy(autoHideEnabled = true, autoHideSeconds = sec)
             switchAutoHide.isChecked = true
+            switchAlwaysOn.isChecked = false
             seekAutoHideSec.progress = (sec - 5).coerceIn(0, 115)
             tvAutoHideVal.text = formatHideLabel(sec)
             etAutoHideSec.setText(sec.toString())
@@ -320,6 +346,14 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_CHARGE).setPackage(packageName))
+        }
+
+        btnTestCall.setOnClickListener {
+            if (!DynamicIslandService.isRunning) {
+                Toast.makeText(this, "شغّل مفتاح الجزيرة العائمة أولًا بالأعلى", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_CALL).setPackage(packageName))
         }
 
         btnPickAvatar.setOnClickListener {

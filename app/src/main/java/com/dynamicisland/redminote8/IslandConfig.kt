@@ -13,6 +13,7 @@ data class IslandSettings(
     val dualActivityEnabled: Boolean = true,
     val autoHideEnabled: Boolean = true,
     val autoHideSeconds: Int = 30,
+    val keepNotifUntilRead: Boolean = true,
     val notchGapDp: Int = 46,
     val barHeightDp: Int = 42,
     val topOffsetDp: Int = 6,
@@ -45,6 +46,7 @@ object IslandConfig {
             dualActivityEnabled = p.getBoolean("dualActivityEnabled", true),
             autoHideEnabled = p.getBoolean("autoHideEnabled", true),
             autoHideSeconds = p.getInt("autoHideSeconds", 30).coerceIn(5, 300),
+            keepNotifUntilRead = p.getBoolean("keepNotifUntilRead", true),
             notchGapDp = p.getInt("notchGapDp", legacy.getInt("notchGapDp", 46)),
             barHeightDp = p.getInt("barHeightDp", legacy.getInt("barHeightDp", 42)),
             topOffsetDp = if (hasV7) p.getInt("topOffsetDp", 6) else 6,
@@ -71,6 +73,7 @@ object IslandConfig {
             .putBoolean("dualActivityEnabled", s.dualActivityEnabled)
             .putBoolean("autoHideEnabled", s.autoHideEnabled)
             .putInt("autoHideSeconds", s.autoHideSeconds.coerceIn(5, 300))
+            .putBoolean("keepNotifUntilRead", s.keepNotifUntilRead)
             .putInt("notchGapDp", s.notchGapDp)
             .putInt("barHeightDp", s.barHeightDp)
             .putInt("topOffsetDp", s.topOffsetDp)

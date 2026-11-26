@@ -34,6 +34,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.telecom.TelecomManager
 import android.transition.AutoTransition
 import android.transition.TransitionManager
 import android.util.TypedValue
@@ -79,6 +80,9 @@ class DynamicIslandService : Service() {
         const val ACTION_TEST_ANIM = "com.dynamicisland.redminote8.ACTION_TEST_ANIM"
         const val ACTION_TEST_DUAL = "com.dynamicisland.redminote8.ACTION_TEST_DUAL"
         const val ACTION_TEST_CHARGE = "com.dynamicisland.redminote8.ACTION_TEST_CHARGE"
+        const val ACTION_NEW_NOTIF = "com.dynamicisland.redminote8.ACTION_NEW_NOTIF"
+        const val ACTION_CALL_UPDATE = "com.dynamicisland.redminote8.ACTION_CALL_UPDATE"
+        const val ACTION_TEST_CALL = "com.dynamicisland.redminote8.ACTION_TEST_CALL"
         private const val CHANNEL_ID = "dynamic_island_overlay_channel"
         private const val NOTIF_ID = 8008
         @Volatile var isRunning: Boolean = false
@@ -92,6 +96,8 @@ class DynamicIslandService : Service() {
     private var isExpanded: Boolean = false
     private var isIslandHidden: Boolean = false
     private var hiddenByFullscreen: Boolean = false
+    private var fullscreenStreak: Int = 0
+    private var wasFallbackAudioPlaying: Boolean = false
     private var lastActivityTime: Long = System.currentTimeMillis()
     private var wasCharging: Boolean = false
     private var chargingPopupUntil: Long = 0L
@@ -107,6 +113,7 @@ class DynamicIslandService : Service() {
     private val clockTicker = object : Runnable {
         override fun run() {
             pollActiveMediaSessions()
+            checkSystemCallState()
             checkChargingTransition()
             evaluateFullscreenAndAutoHide()
             updateIslandUi()
@@ -144,15 +151,42 @@ class DynamicIslandService : Service() {
                 ACTION_TEST_CHARGE -> {
                     triggerChargingPopup(forceDemo = true)
                 }
+                ACTION_NEW_NOTIF -> {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    setExpanded(true)
+                    updateIslandUi()
+                }
+                ACTION_CALL_UPDATE -> {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    updateIslandUi()
+                }
+                ACTION_TEST_CALL -> {
+                    IslandLiveStore.callActive = true
+                    IslandLiveStore.callCaller = "أنس محمد (مكالمة تجريبية)"
+                    IslandLiveStore.callPackage = packageName
+                    IslandLiveStore.callStartTime = System.currentTimeMillis()
+                    IslandLiveStore.callContentIntent = null
+                    IslandLiveStore.callEndAction = null
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    setExpanded(true)
+                    updateIslandUi()
+                }
                 ACTION_TEST_PING -> {
                     IslandLiveStore.notifActive = true
                     IslandLiveStore.notifPackage = packageName
                     IslandLiveStore.notifAppName = "Dynamic Island"
-                    IslandLiveStore.notifTitle = "الإصدار v${BuildConfig.VERSION_NAME} يعمل بنجاح!"
-                    IslandLiveStore.notifText = "شفافية زجاجية + إخفاء ملء الشاشة + شحن فائق"
+                    IslandLiveStore.notifTitle = "رسالة تجريبية • أنس محمد"
+                    IslandLiveStore.notifText = "رسالة صوتية 🎙️ (0:14) — يمكنك القراءة أو الاستماع مباشرة"
+                    IslandLiveStore.notifIsVoice = true
+                    IslandLiveStore.notifContentIntent = null
+                    IslandLiveStore.notifPlayAction = null
                     IslandLiveStore.notifTimestamp = System.currentTimeMillis()
                     wakeUpIsland(forceAnim = true)
                     setExpanded(true)
+                    updateIslandUi()
                 }
                 ACTION_REFRESH -> {
                     wakeUpIsland(forceAnim = false)
@@ -236,6 +270,9 @@ class DynamicIslandService : Service() {
             addAction(ACTION_TEST_ANIM)
             addAction(ACTION_TEST_DUAL)
             addAction(ACTION_TEST_CHARGE)
+            addAction(ACTION_NEW_NOTIF)
+            addAction(ACTION_CALL_UPDATE)
+            addAction(ACTION_TEST_CALL)
         }
         val sysFilter = IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
@@ -315,15 +352,22 @@ class DynamicIslandService : Service() {
     }
 
     private fun isAppInFullscreen(): Boolean {
-        if (!settings.hideInFullscreen) return false
+        if (!settings.hideInFullscreen) {
+            fullscreenStreak = 0
+            return false
+        }
         if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            fullscreenStreak = 3
             return true
         }
         val probe = fullscreenProbeView ?: return false
         if (probe.height <= 0 || !probe.isAttachedToWindow) return false
         val loc = IntArray(2)
         probe.getLocationOnScreen(loc)
-        return loc[1] == 0
+        val screenH = resources.displayMetrics.heightPixels
+        val rawFull = (loc[1] == 0 && probe.height >= screenH - dpToPx(24))
+        if (rawFull) fullscreenStreak++ else fullscreenStreak = 0
+        return fullscreenStreak >= 2
     }
 
     // Juicy iPhone-style Elastic Pop-In Animation
@@ -389,10 +433,11 @@ class DynamicIslandService : Service() {
         }
 
         val now = System.currentTimeMillis()
-        val hasRecentNotif = IslandLiveStore.notifActive && (now - IslandLiveStore.notifTimestamp < 7000L)
+        val hasRecentNotif = IslandLiveStore.notifActive &&
+            (settings.keepNotifUntilRead || (now - IslandLiveStore.notifTimestamp < 7000L))
         val hasCharging = now < chargingPopupUntil
         val hasDualDemo = now < dualDemoUntil
-        val isBusy = isExpanded || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging || hasDualDemo
+        val isBusy = isExpanded || IslandLiveStore.callActive || IslandLiveStore.mediaPlaying || hasRecentNotif || hasCharging || hasDualDemo
 
         if (isBusy) {
             wakeUpIsland(forceAnim = false)
@@ -446,6 +491,34 @@ class DynamicIslandService : Service() {
             wasCharging = false
             chargingPopupUntil = 0L
         }
+    }
+
+    private fun checkSystemCallState() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val inVoiceCall = am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION
+            if (inVoiceCall && !IslandLiveStore.callActive) {
+                IslandLiveStore.callActive = true
+                IslandLiveStore.callCaller = "مكالمة جارية"
+                IslandLiveStore.callPackage = ""
+                IslandLiveStore.callStartTime = System.currentTimeMillis()
+                if (!hiddenByFullscreen) wakeUpIsland(forceAnim = true)
+            } else if (!inVoiceCall && IslandLiveStore.callActive &&
+                IslandLiveStore.callNotifKey.isBlank() && IslandLiveStore.callPackage != packageName
+            ) {
+                IslandLiveStore.callActive = false
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun formatCallDuration(startMs: Long): String {
+        val secTotal = ((System.currentTimeMillis() - startMs).coerceAtLeast(0L) / 1000L)
+        val h = secTotal / 3600L
+        val m = (secTotal % 3600L) / 60L
+        val s = secTotal % 60L
+        return if (h > 0) String.format(Locale.ENGLISH, "%d:%02d:%02d", h, m, s)
+        else String.format(Locale.ENGLISH, "%02d:%02d", m, s)
     }
 
     private fun handleMediaControl(action: String) {
@@ -511,8 +584,6 @@ class DynamicIslandService : Service() {
                         val st = it.playbackState?.state
                         st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING
                     }
-                    // If audio is actively playing (e.g. Facebook video) but NO MediaSession is in PLAYING state,
-                    // do NOT show an old paused YouTube session — fall through to generic audio player!
                     val best = playingSession ?: if (!amCheck.isMusicActive) {
                         sessions.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PAUSED }
                     } else {
@@ -525,10 +596,15 @@ class DynamicIslandService : Service() {
                         val pkg = best.packageName ?: ""
                         val appLabel = getFriendlyAppName(pkg)
                         val wasPlaying = IslandLiveStore.mediaPlaying
+                        val isNowPlaying = (st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING)
+                        wasFallbackAudioPlaying = false
                         IslandLiveStore.activeController = best
                         IslandLiveStore.mediaActive = true
-                        IslandLiveStore.mediaPlaying = (st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING)
-                        IslandLiveStore.mediaPackage = pkg
+                        IslandLiveStore.mediaPlaying = isNowPlaying
+                        if (pkg.isNotBlank()) {
+                            IslandLiveStore.mediaPackage = pkg
+                            IslandLiveStore.lastNotifMediaPackage = pkg
+                        }
                         IslandLiveStore.mediaTitle = meta?.getString(MediaMetadata.METADATA_KEY_TITLE)
                             ?.takeIf { it.isNotBlank() } ?: appLabel
                         IslandLiveStore.mediaArtist = meta?.getString(MediaMetadata.METADATA_KEY_ARTIST)
@@ -550,7 +626,7 @@ class DynamicIslandService : Service() {
                             IslandLiveStore.secondaryMediaTitle = ""
                         }
 
-                        if (!wasPlaying && IslandLiveStore.mediaPlaying && !hiddenByFullscreen) {
+                        if (!wasPlaying && isNowPlaying && !hiddenByFullscreen && isIslandHidden) {
                             wakeUpIsland(forceAnim = true)
                         }
                         return
@@ -564,22 +640,27 @@ class DynamicIslandService : Service() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (am.isMusicActive) {
-                val prevCtrlPlaying = IslandLiveStore.activeController?.playbackState?.state == PlaybackState.STATE_PLAYING
-                if (!IslandLiveStore.mediaActive || !prevCtrlPlaying) {
-                    IslandLiveStore.activeController = null
-                    IslandLiveStore.mediaActive = true
-                    IslandLiveStore.mediaPlaying = true
+                IslandLiveStore.activeController = null
+                IslandLiveStore.mediaActive = true
+                IslandLiveStore.mediaPlaying = true
+                val fallbackPkg = IslandLiveStore.lastNotifMediaPackage.ifBlank { IslandLiveStore.mediaPackage }
+                if (fallbackPkg.isNotBlank()) {
+                    IslandLiveStore.mediaPackage = fallbackPkg
+                    IslandLiveStore.mediaTitle = getFriendlyAppName(fallbackPkg)
+                } else {
                     IslandLiveStore.mediaTitle = "فيديو / صوت قيد التشغيل"
-                    IslandLiveStore.mediaArtist = "اضغط للتحكم بالتشغيل"
-                    IslandLiveStore.mediaPackage = ""
-                    IslandLiveStore.mediaArt = null
-                    if (!hiddenByFullscreen) wakeUpIsland(forceAnim = true)
                 }
-            } else if (IslandLiveStore.activeController == null) {
-                IslandLiveStore.mediaActive = false
-                IslandLiveStore.mediaPlaying = false
-                IslandLiveStore.mediaPackage = ""
-                IslandLiveStore.mediaArt = null
+                IslandLiveStore.mediaArtist = "اضغط للتحكم بالتشغيل"
+                if (!wasFallbackAudioPlaying) {
+                    wasFallbackAudioPlaying = true
+                    if (!hiddenByFullscreen && isIslandHidden) wakeUpIsland(forceAnim = true)
+                }
+            } else {
+                wasFallbackAudioPlaying = false
+                if (IslandLiveStore.activeController == null) {
+                    IslandLiveStore.mediaActive = false
+                    IslandLiveStore.mediaPlaying = false
+                }
             }
         } catch (_: Exception) {
         }
@@ -681,6 +762,9 @@ class DynamicIslandService : Service() {
 
             view.setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_OUTSIDE && isExpanded) {
+                    if (IslandLiveStore.notifActive && settings.keepNotifUntilRead) {
+                        IslandLiveStore.notifActive = false
+                    }
                     setExpanded(false)
                     return@setOnTouchListener true
                 }
@@ -722,6 +806,117 @@ class DynamicIslandService : Service() {
             view.findViewById<ImageButton>(R.id.btnPrev).setOnClickListener { handleMediaControl("prev") }
             view.findViewById<ImageButton>(R.id.btnPlayPause).setOnClickListener { handleMediaControl("toggle") }
             view.findViewById<ImageButton>(R.id.btnNext).setOnClickListener { handleMediaControl("next") }
+            view.findViewById<TextView>(R.id.btnNotifListen).setOnClickListener {
+                val playAct = IslandLiveStore.notifPlayAction
+                val openAct = IslandLiveStore.notifContentIntent
+                var triggered = false
+                try {
+                    if (playAct != null) {
+                        playAct.send()
+                        triggered = true
+                    } else if (openAct != null) {
+                        openAct.send()
+                        triggered = true
+                    }
+                } catch (_: Exception) {
+                }
+                if (!triggered && IslandLiveStore.notifPackage.isNotBlank()) {
+                    try {
+                        val launch = packageManager.getLaunchIntentForPackage(IslandLiveStore.notifPackage)
+                        if (launch != null) {
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(launch)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                IslandLiveStore.notifActive = false
+                setExpanded(false)
+                updateIslandUi()
+            }
+            view.findViewById<TextView>(R.id.btnNotifOpen).setOnClickListener {
+                val openAct = IslandLiveStore.notifContentIntent
+                var opened = false
+                try {
+                    if (openAct != null) {
+                        openAct.send()
+                        opened = true
+                    }
+                } catch (_: Exception) {
+                }
+                if (!opened && IslandLiveStore.notifPackage.isNotBlank()) {
+                    try {
+                        val launch = packageManager.getLaunchIntentForPackage(IslandLiveStore.notifPackage)
+                        if (launch != null) {
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(launch)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                IslandLiveStore.notifActive = false
+                setExpanded(false)
+                updateIslandUi()
+            }
+            view.findViewById<TextView>(R.id.btnNotifDismiss).setOnClickListener {
+                IslandLiveStore.notifActive = false
+                setExpanded(false)
+                updateIslandUi()
+            }
+            view.findViewById<TextView>(R.id.btnCallOpen).setOnClickListener {
+                var opened = false
+                try {
+                    IslandLiveStore.callContentIntent?.let {
+                        it.send()
+                        opened = true
+                    }
+                } catch (_: Exception) {
+                }
+                if (!opened && IslandLiveStore.callPackage.isNotBlank() && IslandLiveStore.callPackage != packageName) {
+                    try {
+                        val launch = packageManager.getLaunchIntentForPackage(IslandLiveStore.callPackage)
+                        if (launch != null) {
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(launch)
+                            opened = true
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                if (!opened) {
+                    try {
+                        val dial = Intent(Intent.ACTION_DIAL).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        startActivity(dial)
+                    } catch (_: Exception) {
+                    }
+                }
+                setExpanded(false)
+            }
+            view.findViewById<TextView>(R.id.btnCallEnd).setOnClickListener {
+                var ended = false
+                try {
+                    IslandLiveStore.callEndAction?.let {
+                        it.send()
+                        ended = true
+                    }
+                } catch (_: Exception) {
+                }
+                if (!ended && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                        @Suppress("DEPRECATION")
+                        tm.endCall()
+                        ended = true
+                    } catch (_: Exception) {
+                    }
+                }
+                IslandLiveStore.callActive = false
+                IslandLiveStore.callNotifKey = ""
+                IslandLiveStore.callContentIntent = null
+                IslandLiveStore.callEndAction = null
+                setExpanded(false)
+                updateIslandUi()
+            }
             view.findViewById<TextView>(R.id.btnOpenSettings).setOnClickListener {
                 setExpanded(false)
                 val i = Intent(this, MainActivity::class.java).apply {
@@ -879,6 +1074,11 @@ class DynamicIslandService : Service() {
         val compactRow = view.findViewById<LinearLayout>(R.id.compactRow)
         val expandedBox = view.findViewById<LinearLayout>(R.id.expandedBox)
         val mediaControls = view.findViewById<LinearLayout>(R.id.mediaControlsRow)
+        val notifActionsRow = view.findViewById<LinearLayout>(R.id.notifActionsRow)
+        val btnNotifListen = view.findViewById<TextView>(R.id.btnNotifListen)
+        val callActionsRow = view.findViewById<LinearLayout>(R.id.callActionsRow)
+        val compactVortex = view.findViewById<ChargingVortexBatteryView>(R.id.compactVortexBattery)
+        val expandedVortex = view.findViewById<ChargingVortexBatteryView>(R.id.expandedVortexBattery)
         val notchCenterGap = view.findViewById<Space>(R.id.notchCenterGap)
 
         val ivBluetooth = view.findViewById<ImageView>(R.id.ivBluetooth)
@@ -908,7 +1108,7 @@ class DynamicIslandService : Service() {
 
         val isLight = IslandConfig.isLightTheme(settings.themeId)
         val strokeColor = when {
-            isChargingAlert || isCharging -> Color.argb(190, 52, 211, 153)
+            IslandLiveStore.callActive || isChargingAlert || isCharging -> Color.argb(200, 52, 211, 153)
             settings.glassEffectEnabled && isLight -> Color.argb(150, 255, 255, 255)
             settings.glassEffectEnabled -> Color.argb(95, 255, 255, 255)
             isLight -> Color.rgb(203, 213, 225)
@@ -920,7 +1120,8 @@ class DynamicIslandService : Service() {
         val isCoverBar = settings.coverStatusBar && !isExpanded
         pill.background = buildSurfaceDrawable(isCircle = false, strokeColor = strokeColor, isCoverBar = isCoverBar)
 
-        val showNotif = IslandLiveStore.notifActive && (nowMs - IslandLiveStore.notifTimestamp < 7000L)
+        val showNotif = IslandLiveStore.notifActive &&
+            (settings.keepNotifUntilRead || (nowMs - IslandLiveStore.notifTimestamp < 7000L))
 
         // Determine Dual-Activity Satellite Bubble (iPhone Split Pill + Detached Circle)
         var wantSat = false
@@ -1071,42 +1272,105 @@ class DynamicIslandService : Service() {
         compactRow.visibility = if (isExpanded) View.GONE else View.VISIBLE
         expandedBox.visibility = if (isExpanded) View.VISIBLE else View.GONE
 
+        fun showVortex(show: Boolean) {
+            if (show) {
+                compactVortex.setBatteryPercent(batteryPct)
+                expandedVortex.setBatteryPercent(batteryPct)
+                compactVortex.visibility = View.VISIBLE
+                expandedVortex.visibility = View.VISIBLE
+                compactVortex.startVortex()
+                expandedVortex.startVortex()
+                ivCompactIcon.visibility = View.GONE
+                ivExpandedIcon.visibility = View.GONE
+            } else {
+                compactVortex.stopVortex()
+                expandedVortex.stopVortex()
+                compactVortex.visibility = View.GONE
+                expandedVortex.visibility = View.GONE
+                ivCompactIcon.visibility = View.VISIBLE
+                ivExpandedIcon.visibility = View.VISIBLE
+            }
+        }
+
         when {
+            IslandLiveStore.callActive -> {
+                showVortex(false)
+                val callTimer = formatCallDuration(IslandLiveStore.callStartTime)
+                val callAppIcon = loadAppIcon(IslandLiveStore.callPackage)
+                if (callAppIcon != null && IslandLiveStore.callPackage != packageName) {
+                    ivCompactIcon.setImageDrawable(callAppIcon)
+                    ivExpandedIcon.setImageDrawable(callAppIcon)
+                } else {
+                    ivCompactIcon.setImageResource(R.drawable.ic_call_live)
+                    ivExpandedIcon.setImageResource(R.drawable.ic_call_live)
+                }
+                tvCompactRightName.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
+                tvCompactLeftStatus.text = "📞 $callTimer"
+                tvCompactLeftStatus.setTextColor(Color.rgb(52, 211, 153))
+                tvExpandedTitle.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
+                tvExpandedSub.text = "مدة المكالمة: $callTimer"
+                tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
+                tvExpandedMeta.text = "مكالمة نشطة • $statusSummary"
+                mediaControls.visibility = View.GONE
+                notifActionsRow.visibility = View.GONE
+                callActionsRow.visibility = View.VISIBLE
+            }
+
             isChargingAlert -> {
-                ivCompactIcon.setImageResource(R.drawable.ic_charging_bolt)
-                ivExpandedIcon.setImageResource(R.drawable.ic_charging_bolt)
+                showVortex(true)
                 val chargeTitle = when {
                     batt.watts >= 12 -> "شحن فائق سريع ⚡ ${batt.watts}W"
                     batt.watts > 0 -> "جاري الشحن ⚡ ${batt.watts}W"
                     batt.isFast -> "جاري الشحن السريع ⚡"
                     else -> "جاري الشحن ⚡"
                 }
-                tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W ⚡" else "جاري الشحن ⚡"
+                tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W" else "جاري الشحن"
                 tvCompactLeftStatus.text = "$batteryPct%"
+                tvCompactLeftStatus.setTextColor(Color.rgb(52, 211, 153))
                 tvExpandedTitle.text = chargeTitle
-                tvExpandedSub.text = "نسبة البطارية الحالية: $batteryPct%"
+                tvExpandedSub.text = if (batteryPct >= 100) "اكتمل الشحن 100% ✅" else "نسبة البطارية: $batteryPct% — جاري التعبئة"
                 tvExpandedMeta.text = statusSummary
                 mediaControls.visibility = View.GONE
+                notifActionsRow.visibility = View.GONE
+                callActionsRow.visibility = View.GONE
             }
 
             showNotif -> {
+                showVortex(false)
+                callActionsRow.visibility = View.GONE
                 val appIcon = loadAppIcon(IslandLiveStore.notifPackage)
+                val largeBmp = IslandLiveStore.notifLargeIcon
                 if (appIcon != null) {
                     ivCompactIcon.setImageDrawable(appIcon)
-                    ivExpandedIcon.setImageDrawable(appIcon)
+                } else if (largeBmp != null) {
+                    ivCompactIcon.setImageBitmap(largeBmp)
                 } else {
                     ivCompactIcon.setImageResource(R.drawable.app_logo)
+                }
+                if (largeBmp != null) {
+                    ivExpandedIcon.setImageBitmap(largeBmp)
+                } else if (appIcon != null) {
+                    ivExpandedIcon.setImageDrawable(appIcon)
+                } else {
                     ivExpandedIcon.setImageResource(R.drawable.app_logo)
                 }
                 tvCompactRightName.text = IslandLiveStore.notifAppName
-                tvCompactLeftStatus.text = "رسالة"
+                tvCompactLeftStatus.text = if (IslandLiveStore.notifIsVoice) "🎙️ فويس" else "رسالة"
                 tvExpandedTitle.text = IslandLiveStore.notifTitle.ifBlank { IslandLiveStore.notifAppName }
                 tvExpandedSub.text = IslandLiveStore.notifText
-                tvExpandedMeta.text = "${IslandLiveStore.notifAppName} • $statusSummary"
+                tvExpandedMeta.text = if (IslandLiveStore.notifIsVoice) {
+                    "${IslandLiveStore.notifAppName} • رسالة صوتية 🎙️"
+                } else {
+                    "${IslandLiveStore.notifAppName} • $statusSummary"
+                }
                 mediaControls.visibility = View.GONE
+                notifActionsRow.visibility = View.VISIBLE
+                btnNotifListen.visibility = if (IslandLiveStore.notifIsVoice) View.VISIBLE else View.GONE
             }
 
             IslandLiveStore.mediaActive -> {
+                showVortex(false)
+                callActionsRow.visibility = View.GONE
                 val appIcon = loadAppIcon(IslandLiveStore.mediaPackage)
                 val art = IslandLiveStore.mediaArt
                 if (appIcon != null) ivCompactIcon.setImageDrawable(appIcon)
@@ -1127,23 +1391,26 @@ class DynamicIslandService : Service() {
                     else android.R.drawable.ic_media_play
                 )
                 mediaControls.visibility = View.VISIBLE
+                notifActionsRow.visibility = View.GONE
             }
 
             else -> {
+                callActionsRow.visibility = View.GONE
                 if (isCharging) {
-                    ivCompactIcon.setImageResource(R.drawable.ic_charging_bolt)
-                    ivExpandedIcon.setImageResource(R.drawable.ic_charging_bolt)
-                    tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W ⚡" else "شحن ⚡"
+                    showVortex(true)
+                    tvCompactRightName.text = if (batt.watts > 0) "شحن ${batt.watts}W" else "شحن $batteryPct%"
                 } else {
+                    showVortex(false)
                     bindCrispAvatar(ivCompactIcon)
                     bindCrispAvatar(ivExpandedIcon)
                     tvCompactRightName.text = settings.userName
                 }
                 tvCompactLeftStatus.text = timeFmt.format(now)
                 tvExpandedTitle.text = "${settings.userName} • ${fullTimeFmt.format(now)}"
-                tvExpandedSub.text = dateFmt.format(now)
+                tvExpandedSub.text = if (isCharging) "جاري الشحن ($batteryPct%) • ${dateFmt.format(now)}" else dateFmt.format(now)
                 tvExpandedMeta.text = statusSummary
                 mediaControls.visibility = View.GONE
+                notifActionsRow.visibility = View.GONE
             }
         }
     }
