@@ -167,7 +167,7 @@ class MainActivity : AppCompatActivity() {
         tvBarHeightVal.text = "${settings.barHeightDp} dp"
         seekTop.progress = settings.topOffsetDp
         tvTopVal.text = "${settings.topOffsetDp} dp"
-        seekWidth.progress = (settings.compactWidthDp - 180).coerceIn(0, 200)
+        seekWidth.progress = (settings.compactWidthDp - 150).coerceIn(0, 230)
         tvWidthVal.text = "${settings.compactWidthDp} dp"
 
         etUserName.setText(settings.userName)
@@ -414,7 +414,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         seekWidth.setOnSeekBarChangeListener(simpleSeek { p ->
-            val w = 180 + p
+            val w = 150 + p
             settings = settings.copy(compactWidthDp = w)
             tvWidthVal.text = "$w dp"
             saveAndNotify()

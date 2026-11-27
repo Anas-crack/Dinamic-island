@@ -958,7 +958,7 @@ class DynamicIslandService : Service() {
 
 
             val lp = WindowManager.LayoutParams(
-                if (settings.coverStatusBar) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 type,
                 flags,
@@ -1197,11 +1197,7 @@ class DynamicIslandService : Service() {
     private fun applyWindowPosition() {
         val v = rootView ?: return
         val lp = layoutParams ?: return
-        lp.width = if (settings.coverStatusBar && !isExpanded) {
-            WindowManager.LayoutParams.MATCH_PARENT
-        } else {
-            WindowManager.LayoutParams.WRAP_CONTENT
-        }
+        lp.width = WindowManager.LayoutParams.WRAP_CONTENT
         lp.y = if (settings.coverStatusBar && !isExpanded) 0 else dpToPx(settings.topOffsetDp)
 
         try {
@@ -1450,11 +1446,10 @@ class DynamicIslandService : Service() {
             satelliteBubble.visibility = View.GONE
         }
 
-        val maxCompactW = settings.compactWidthDp.coerceIn(160, 380)
+        val maxCompactW = settings.compactWidthDp.coerceIn(150, 380)
         val targetWidth = when {
             isExpanded -> dpToPx(340)
-            isCoverBar -> ViewGroup.LayoutParams.MATCH_PARENT
-            wantSat -> dpToPx((maxCompactW - 48).coerceAtLeast(145))
+            wantSat -> dpToPx((maxCompactW - 48).coerceAtLeast(135))
             else -> dpToPx(maxCompactW)
         }
         val targetMinHeight = if (isCoverBar) {
@@ -1478,6 +1473,12 @@ class DynamicIslandService : Service() {
             val gp = notchCenterGap.layoutParams
             gp.width = gapPx
             notchCenterGap.layoutParams = gp
+        }
+
+        // Strictly cap right-side song/app label width so long music titles NEVER stretch the compact pill!
+        if (!isExpanded) {
+            val availSidePx = ((targetWidth - gapPx) / 2 - dpToPx(44)).coerceAtLeast(dpToPx(24))
+            tvCompactRightName.maxWidth = availSidePx
         }
 
         tvCompactLeftStatus.setTextColor(primaryText)
