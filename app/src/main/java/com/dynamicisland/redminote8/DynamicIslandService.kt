@@ -159,6 +159,8 @@ class DynamicIslandService : Service() {
         }
     }
     private var lastActivityTime: Long = System.currentTimeMillis()
+    private var lastExpandedAt: Long = 0L
+    private var lastTelephonyState: Int = TelephonyManager.CALL_STATE_IDLE
     private var wasCharging: Boolean = false
     private var chargingPopupUntil: Long = 0L
     private var dualDemoUntil: Long = 0L
@@ -297,6 +299,7 @@ class DynamicIslandService : Service() {
                     val num = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
                     when (stateStr) {
                         TelephonyManager.EXTRA_STATE_RINGING -> {
+                            lastTelephonyState = TelephonyManager.CALL_STATE_RINGING
                             IslandLiveStore.callActive = true
                             IslandLiveStore.callIsRinging = true
                             if (!num.isNullOrBlank()) IslandLiveStore.callCaller = num
@@ -307,6 +310,7 @@ class DynamicIslandService : Service() {
                             updateIslandUi()
                         }
                         TelephonyManager.EXTRA_STATE_OFFHOOK -> {
+                            lastTelephonyState = TelephonyManager.CALL_STATE_OFFHOOK
                             IslandLiveStore.callActive = true
                             if (IslandLiveStore.callIsRinging || IslandLiveStore.callStartTime == 0L) {
                                 IslandLiveStore.callIsRinging = false
@@ -317,6 +321,7 @@ class DynamicIslandService : Service() {
                             updateIslandUi()
                         }
                         TelephonyManager.EXTRA_STATE_IDLE -> {
+                            lastTelephonyState = TelephonyManager.CALL_STATE_IDLE
                             IslandLiveStore.callActive = false
                             IslandLiveStore.callIsRinging = false
                             IslandLiveStore.callNotifKey = ""
@@ -612,6 +617,7 @@ class DynamicIslandService : Service() {
                     handler.post {
                         when (state) {
                             TelephonyManager.CALL_STATE_RINGING -> {
+                                lastTelephonyState = TelephonyManager.CALL_STATE_RINGING
                                 IslandLiveStore.callActive = true
                                 IslandLiveStore.callIsRinging = true
                                 if (!phoneNumber.isNullOrBlank()) IslandLiveStore.callCaller = phoneNumber
@@ -622,6 +628,7 @@ class DynamicIslandService : Service() {
                                 updateIslandUi()
                             }
                             TelephonyManager.CALL_STATE_OFFHOOK -> {
+                                lastTelephonyState = TelephonyManager.CALL_STATE_OFFHOOK
                                 IslandLiveStore.callActive = true
                                 if (IslandLiveStore.callIsRinging || IslandLiveStore.callStartTime == 0L) {
                                     IslandLiveStore.callIsRinging = false
@@ -632,6 +639,7 @@ class DynamicIslandService : Service() {
                                 updateIslandUi()
                             }
                             TelephonyManager.CALL_STATE_IDLE -> {
+                                lastTelephonyState = TelephonyManager.CALL_STATE_IDLE
                                 if (IslandLiveStore.callPackage != packageName) {
                                     IslandLiveStore.callActive = false
                                     IslandLiveStore.callIsRinging = false
@@ -727,9 +735,19 @@ class DynamicIslandService : Service() {
 
     private fun checkSystemCallState() {
         try {
+            val tm = telephonyManager ?: (getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)
+            val liveTelState = try {
+                @Suppress("DEPRECATION")
+                tm?.callState ?: lastTelephonyState
+            } catch (_: Exception) {
+                lastTelephonyState
+            }
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val isRingingMode = am.mode == AudioManager.MODE_RINGTONE
-            val inVoiceCall = am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION
+            val isRingingMode = liveTelState == TelephonyManager.CALL_STATE_RINGING || am.mode == AudioManager.MODE_RINGTONE
+            val inVoiceCall = liveTelState == TelephonyManager.CALL_STATE_OFFHOOK ||
+                am.mode == AudioManager.MODE_IN_CALL ||
+                am.mode == AudioManager.MODE_IN_COMMUNICATION
+
             if (isRingingMode) {
                 val newlyRinging = !IslandLiveStore.callActive || !IslandLiveStore.callIsRinging
                 IslandLiveStore.callActive = true
@@ -752,7 +770,10 @@ class DynamicIslandService : Service() {
                     wakeUpIsland(forceAnim = true)
                 }
             } else if (IslandLiveStore.callActive &&
-                IslandLiveStore.callNotifKey.isBlank() && IslandLiveStore.callPackage != packageName
+                liveTelState == TelephonyManager.CALL_STATE_IDLE &&
+                lastTelephonyState == TelephonyManager.CALL_STATE_IDLE &&
+                IslandLiveStore.callNotifKey.isBlank() &&
+                IslandLiveStore.callPackage != packageName
             ) {
                 IslandLiveStore.callActive = false
                 IslandLiveStore.callIsRinging = false
@@ -991,7 +1012,9 @@ class DynamicIslandService : Service() {
     private fun setExpanded(expand: Boolean) {
         if (isExpanded == expand) return
         isExpanded = expand
-        lastActivityTime = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        lastActivityTime = now
+        if (expand) lastExpandedAt = now
         applyWindowPosition()
         updateIslandUi()
     }
@@ -1042,6 +1065,12 @@ class DynamicIslandService : Service() {
 
             view.setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_OUTSIDE && isExpanded) {
+                    if (System.currentTimeMillis() - lastExpandedAt < 2500L) {
+                        return@setOnTouchListener false
+                    }
+                    if (IslandLiveStore.callActive && IslandLiveStore.callIsRinging) {
+                        return@setOnTouchListener false
+                    }
                     if (IslandLiveStore.notifActive && settings.keepNotifUntilRead) {
                         IslandLiveStore.notifActive = false
                     }

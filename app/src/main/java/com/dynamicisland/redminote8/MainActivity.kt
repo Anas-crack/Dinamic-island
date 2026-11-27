@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settings: IslandSettings
     private lateinit var tvOverlayStatus: TextView
     private lateinit var tvNotifStatus: TextView
+    private lateinit var tvPhoneStatus: TextView
     private lateinit var tvServiceState: TextView
     private lateinit var switchEnable: Switch
 
@@ -81,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         val tvDevVersion = findViewById<TextView>(R.id.tvDevVersion)
         tvOverlayStatus = findViewById(R.id.tvOverlayStatus)
         tvNotifStatus = findViewById(R.id.tvNotifStatus)
+        tvPhoneStatus = findViewById(R.id.tvPhoneStatus)
         tvServiceState = findViewById(R.id.tvServiceState)
         switchEnable = findViewById(R.id.switchEnableIsland)
 
@@ -94,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         val btnTestCall = findViewById<Button>(R.id.btnTestCall)
         val btnTestPrivacy = findViewById<Button>(R.id.btnTestPrivacy)
         val btnUsagePerm = findViewById<Button>(R.id.btnUsagePermission)
+        val btnPhonePerm = findViewById<Button>(R.id.btnPhonePermission)
         val btnPickAvatar = findViewById<Button>(R.id.btnPickAvatar)
 
         val rgCutout = findViewById<RadioGroup>(R.id.rgCutoutType)
@@ -372,6 +375,12 @@ class MainActivity : AppCompatActivity() {
             sendBroadcast(Intent(DynamicIslandService.ACTION_TEST_PRIVACY).setPackage(packageName))
         }
 
+        btnPhonePerm.setOnClickListener {
+            val req = mutableListOf(Manifest.permission.READ_PHONE_STATE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) req.add(Manifest.permission.ANSWER_PHONE_CALLS)
+            requestPermissions(req.toTypedArray(), 902)
+        }
+
         btnUsagePerm.setOnClickListener {
             try {
                 startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
@@ -482,8 +491,24 @@ class MainActivity : AppCompatActivity() {
         tvOverlayStatus.text = if (overlayOk) "✓ مفعّل" else "✕ غير مفعّل"
         tvOverlayStatus.setTextColor(Color.parseColor(if (overlayOk) "#34D399" else "#FB7185"))
 
-        tvNotifStatus.text = if (notifOk) "✓ مفعّل (يقرأ يوتيوب والموسيقى)" else "✕ غير مفعّل"
-        tvNotifStatus.setTextColor(Color.parseColor(if (notifOk) "#34D399" else "#FBBF24"))
+        val notifConnected = notifOk && IslandLiveStore.listenerConnected
+        tvNotifStatus.text = when {
+            notifConnected -> "✓ متصل ويعمل الآن"
+            notifOk -> "⚠ أغلقه وافتحه لإعادة الربط"
+            else -> "✕ غير مفعّل"
+        }
+        tvNotifStatus.setTextColor(
+            Color.parseColor(
+                when {
+                    notifConnected -> "#34D399"
+                    notifOk -> "#FBBF24"
+                    else -> "#FB7185"
+                }
+            )
+        )
+        val hasPhone = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        tvPhoneStatus.text = if (hasPhone) "✓ مفعّل" else "✕ مطلوب للمكالمات"
+        tvPhoneStatus.setTextColor(Color.parseColor(if (hasPhone) "#34D399" else "#FB7185"))
 
         switchEnable.isChecked = DynamicIslandService.isRunning
         if (DynamicIslandService.isRunning) {

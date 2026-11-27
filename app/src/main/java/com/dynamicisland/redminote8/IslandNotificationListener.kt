@@ -227,8 +227,11 @@ class IslandNotificationListener : NotificationListenerService() {
             val lowerCombined = "$cTitle $cText".lowercase()
             val ringing = answerPending != null ||
                 lowerCombined.contains("مكالمة واردة") ||
+                lowerCombined.contains("مكالمة منتظرة") ||
+                lowerCombined.contains("call waiting") ||
                 lowerCombined.contains("incoming") ||
                 lowerCombined.contains("يتصل بك") ||
+                lowerCombined.contains("يرن") ||
                 lowerCombined.contains("calling")
             val wasRinging = IslandLiveStore.callIsRinging
             val sameCall = IslandLiveStore.callActive && IslandLiveStore.callNotifKey == sbn.key
