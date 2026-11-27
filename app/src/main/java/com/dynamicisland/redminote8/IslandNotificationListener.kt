@@ -196,15 +196,21 @@ class IslandNotificationListener : NotificationListenerService() {
             }
         }
 
-        val isCallNotif = notif.category == Notification.CATEGORY_CALL ||
-            (notif.actions?.any { act ->
-                val t = act.title?.toString()?.lowercase().orEmpty()
-                t.contains("إنهاء") || t.contains("انهاء") || t.contains("رفض") ||
-                    t.contains("رد") || t.contains("إجابة") || t.contains("قبول") ||
-                    t.contains("answer") || t.contains("accept") ||
-                    t.contains("hang up") || t.contains("end call") || t.contains("decline") ||
-                    t == "end" || t.contains("إغلاق المكالمة")
-            } == true)
+        val hasTextReply = notif.actions?.any { !it.remoteInputs.isNullOrEmpty() } == true
+        val isExplicitMsg = notif.category == Notification.CATEGORY_MESSAGE ||
+            notif.category == Notification.CATEGORY_EMAIL ||
+            notif.category == Notification.CATEGORY_SOCIAL ||
+            hasTextReply
+        val isCallNotif = !isExplicitMsg && (
+            notif.category == Notification.CATEGORY_CALL ||
+                (notif.actions?.any { act ->
+                    val t = act.title?.toString()?.lowercase().orEmpty()
+                    t.contains("إنهاء المكالمة") || t.contains("انهاء المكالمة") ||
+                        t.contains("إغلاق المكالمة") || t.contains("رفض") ||
+                        t.contains("hang up") || t.contains("end call") ||
+                        t.contains("decline") || t.contains("answer")
+                } == true)
+            )
 
         if (isCallNotif) {
             val cTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()

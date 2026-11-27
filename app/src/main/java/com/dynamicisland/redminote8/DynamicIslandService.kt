@@ -791,6 +791,40 @@ class DynamicIslandService : Service() {
         else String.format(Locale.ENGLISH, "%02d:%02d", m, s)
     }
 
+    private fun isSpeakerActive(): Boolean {
+        return try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.communicationDevice?.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                    @Suppress("DEPRECATION") am.isSpeakerphoneOn
+            } else {
+                @Suppress("DEPRECATION") am.isSpeakerphoneOn
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun toggleCallSpeaker() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val wantOn = !isSpeakerActive()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (wantOn) {
+                    val spk = am.availableCommunicationDevices.firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (spk != null) am.setCommunicationDevice(spk)
+                } else {
+                    am.clearCommunicationDevice()
+                }
+            }
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = wantOn
+        } catch (_: Exception) {
+        }
+    }
+
     private fun handleMediaControl(action: String) {
         wakeUpIsland(forceAnim = false)
         pollActiveMediaSessions()
@@ -1227,6 +1261,10 @@ class DynamicIslandService : Service() {
                 }
                 setExpanded(false)
             }
+            view.findViewById<TextView>(R.id.btnCallSpeaker).setOnClickListener {
+                toggleCallSpeaker()
+                updateIslandUi()
+            }
             view.findViewById<TextView>(R.id.btnCallEnd).setOnClickListener {
                 var ended = false
                 try {
@@ -1644,7 +1682,11 @@ class DynamicIslandService : Service() {
             IslandLiveStore.callActive -> {
                 showVortex(false)
                 val btnCallOpenView = view.findViewById<TextView>(R.id.btnCallOpen)
+                val btnCallSpeakerView = view.findViewById<TextView>(R.id.btnCallSpeaker)
                 val btnCallEndView = view.findViewById<TextView>(R.id.btnCallEnd)
+                val spkOn = isSpeakerActive()
+                btnCallSpeakerView.text = if (spkOn) "🔊 سبيكر" else "🔈 سبيكر"
+                btnCallSpeakerView.setBackgroundResource(if (spkOn) R.drawable.bg_btn_primary else R.drawable.bg_btn_secondary)
                 val callAppIcon = loadAppIconBitmap(IslandLiveStore.callPackage)
                 if (callAppIcon != null && IslandLiveStore.callPackage != packageName) {
                     ivCompactIcon.setImageBitmap(callAppIcon)
@@ -1661,7 +1703,8 @@ class DynamicIslandService : Service() {
                     tvExpandedSub.text = "مكالمة واردة — اضغط للرد أو الرفض"
                     tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
                     tvExpandedMeta.text = "يرن الآن 📞 • $statusSummary"
-                    btnCallOpenView.text = "📞 رد على المكالمة"
+                    btnCallOpenView.text = "📞 رد"
+                    btnCallSpeakerView.visibility = View.GONE
                     btnCallEndView.text = "📵 رفض"
                 } else {
                     val callTimer = formatCallDuration(IslandLiveStore.callStartTime)
@@ -1672,8 +1715,9 @@ class DynamicIslandService : Service() {
                     tvExpandedSub.text = "مدة المكالمة: $callTimer"
                     tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
                     tvExpandedMeta.text = "مكالمة نشطة • $statusSummary"
-                    btnCallOpenView.text = "📞 فتح المكالمة"
-                    btnCallEndView.text = "📵 إنهاء المكالمة"
+                    btnCallOpenView.text = "📞 فتح"
+                    btnCallSpeakerView.visibility = View.VISIBLE
+                    btnCallEndView.text = "📵 إنهاء"
                 }
                 mediaControls.visibility = View.GONE
                 notifActionsRow.visibility = View.GONE
