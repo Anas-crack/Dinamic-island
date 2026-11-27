@@ -108,6 +108,12 @@ class DynamicIslandService : Service() {
     private var wasFallbackAudioPlaying: Boolean = false
     private var mediaPausedSince: Long = 0L
     private var lastSeenNotifVersion: Long = 0L
+    private var lastStyleKey: String = ""
+    private var cachedFgPkg: String = ""
+    private var lastFgQueryAt: Long = 0L
+    private var telephonyManager: TelephonyManager? = null
+    @Suppress("DEPRECATION")
+    private var phoneStateListener: android.telephony.PhoneStateListener? = null
     private var isCameraActive: Boolean = false
     private var isMicActive: Boolean = false
     private var privacyDemoUntil: Long = 0L
@@ -177,7 +183,7 @@ class DynamicIslandService : Service() {
             checkChargingTransition()
             evaluateFullscreenAndAutoHide()
             updateIslandUi()
-            handler.postDelayed(this, 650L)
+            handler.postDelayed(this, 1000L)
         }
     }
 
@@ -187,6 +193,7 @@ class DynamicIslandService : Service() {
                 ACTION_RELOAD_CONFIG -> {
                     settings = IslandConfig.load(this@DynamicIslandService)
                     cachedAvatarUri = null
+                    lastStyleKey = ""
                     hiddenByFullscreen = false
                     wakeUpIsland(forceAnim = false)
                     applyWindowPosition()
@@ -596,11 +603,64 @@ class DynamicIslandService : Service() {
             isMicActive = !(audioManagerRef?.activeRecordingConfigurations.isNullOrEmpty())
         } catch (_: Exception) {
         }
+        try {
+            telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            @Suppress("DEPRECATION")
+            val listener = object : android.telephony.PhoneStateListener() {
+                @Deprecated("Deprecated in Java")
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    handler.post {
+                        when (state) {
+                            TelephonyManager.CALL_STATE_RINGING -> {
+                                IslandLiveStore.callActive = true
+                                IslandLiveStore.callIsRinging = true
+                                if (!phoneNumber.isNullOrBlank()) IslandLiveStore.callCaller = phoneNumber
+                                else if (IslandLiveStore.callCaller.isBlank()) IslandLiveStore.callCaller = "مكالمة واردة"
+                                hiddenByFullscreen = false
+                                wakeUpIsland(forceAnim = true)
+                                setExpanded(true)
+                                updateIslandUi()
+                            }
+                            TelephonyManager.CALL_STATE_OFFHOOK -> {
+                                IslandLiveStore.callActive = true
+                                if (IslandLiveStore.callIsRinging || IslandLiveStore.callStartTime == 0L) {
+                                    IslandLiveStore.callIsRinging = false
+                                    IslandLiveStore.callStartTime = System.currentTimeMillis()
+                                }
+                                hiddenByFullscreen = false
+                                wakeUpIsland(forceAnim = true)
+                                updateIslandUi()
+                            }
+                            TelephonyManager.CALL_STATE_IDLE -> {
+                                if (IslandLiveStore.callPackage != packageName) {
+                                    IslandLiveStore.callActive = false
+                                    IslandLiveStore.callIsRinging = false
+                                    IslandLiveStore.callNotifKey = ""
+                                    IslandLiveStore.callAnswerAction = null
+                                    IslandLiveStore.callEndAction = null
+                                    IslandLiveStore.callContentIntent = null
+                                    setExpanded(false)
+                                    updateIslandUi()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            phoneStateListener = listener
+            @Suppress("DEPRECATION")
+            telephonyManager?.listen(listener, android.telephony.PhoneStateListener.LISTEN_CALL_STATE)
+        } catch (_: Exception) {
+        }
     }
 
     private fun unregisterPrivacySensors() {
         try { cameraManager?.unregisterAvailabilityCallback(cameraCallback) } catch (_: Exception) {}
         try { audioManagerRef?.unregisterAudioRecordingCallback(micCallback) } catch (_: Exception) {}
+        try {
+            @Suppress("DEPRECATION")
+            phoneStateListener?.let { telephonyManager?.listen(it, android.telephony.PhoneStateListener.LISTEN_NONE) }
+        } catch (_: Exception) {}
     }
 
     private fun tryRebindNotificationListener() {
@@ -617,7 +677,10 @@ class DynamicIslandService : Service() {
     }
 
     private fun getForegroundAppPackage(): String {
-        return try {
+        val now = System.currentTimeMillis()
+        if (now - lastFgQueryAt < 3000L) return cachedFgPkg
+        lastFgQueryAt = now
+        val found = try {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return ""
             val end = System.currentTimeMillis()
             val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, end - 60_000L, end)
@@ -629,6 +692,8 @@ class DynamicIslandService : Service() {
         } catch (_: Exception) {
             ""
         }
+        if (found.isNotBlank()) cachedFgPkg = found
+        return cachedFgPkg
     }
 
     private fun isBluetoothOn(): Boolean {
@@ -927,11 +992,6 @@ class DynamicIslandService : Service() {
         if (isExpanded == expand) return
         isExpanded = expand
         lastActivityTime = System.currentTimeMillis()
-        val container = rootView?.findViewById<ViewGroup>(R.id.islandContainer)
-        if (container != null) {
-            val transition = AutoTransition().apply { duration = 220 }
-            TransitionManager.beginDelayedTransition(container, transition)
-        }
         applyWindowPosition()
         updateIslandUi()
     }
@@ -1364,7 +1424,6 @@ class DynamicIslandService : Service() {
         val mutedText = if (isLight) Color.rgb(71, 85, 105) else Color.rgb(190, 204, 224)
 
         val isCoverBar = settings.coverStatusBar && !isExpanded
-        pill.background = buildSurfaceDrawable(isCircle = false, strokeColor = strokeColor, isCoverBar = isCoverBar)
 
         val showNotif = IslandLiveStore.notifActive &&
             (settings.keepNotifUntilRead || (nowMs - IslandLiveStore.notifTimestamp < 7000L))
@@ -1457,28 +1516,29 @@ class DynamicIslandService : Service() {
         } else {
             0
         }
-        val pParams = pill.layoutParams
-        if (pParams.width != targetWidth) {
-            pParams.width = targetWidth
-            pill.layoutParams = pParams
-        }
-        pill.minimumHeight = targetMinHeight
-
-        val pad = if (isCoverBar) 0 else dpToPx(4)
-        view.setPadding(pad, if (isCoverBar) 0 else pad, pad, pad)
-
         val gapDp = settings.notchGapDp.coerceIn(22, 90)
         val gapPx = dpToPx(gapDp)
-        if (notchCenterGap.layoutParams.width != gapPx) {
-            val gp = notchCenterGap.layoutParams
-            gp.width = gapPx
-            notchCenterGap.layoutParams = gp
-        }
-
-        // Strictly cap right-side song/app label width so long music titles NEVER stretch the compact pill!
-        if (!isExpanded) {
-            val availSidePx = ((targetWidth - gapPx) / 2 - dpToPx(44)).coerceAtLeast(dpToPx(24))
-            tvCompactRightName.maxWidth = availSidePx
+        val styleKey = "$isExpanded|$isCoverBar|$targetWidth|$targetMinHeight|$gapPx|${settings.themeId}|${settings.glassEffectEnabled}|${settings.glassOpacityPercent}|$strokeColor"
+        if (styleKey != lastStyleKey) {
+            lastStyleKey = styleKey
+            pill.background = buildSurfaceDrawable(isCircle = false, strokeColor = strokeColor, isCoverBar = isCoverBar)
+            val pParams = pill.layoutParams
+            if (pParams.width != targetWidth) {
+                pParams.width = targetWidth
+                pill.layoutParams = pParams
+            }
+            pill.minimumHeight = targetMinHeight
+            val pad = if (isCoverBar) 0 else dpToPx(4)
+            view.setPadding(pad, if (isCoverBar) 0 else pad, pad, pad)
+            if (notchCenterGap.layoutParams.width != gapPx) {
+                val gp = notchCenterGap.layoutParams
+                gp.width = gapPx
+                notchCenterGap.layoutParams = gp
+            }
+            if (!isExpanded) {
+                val availSidePx = ((targetWidth - gapPx) / 2 - dpToPx(40)).coerceAtLeast(dpToPx(20))
+                tvCompactRightName.maxWidth = availSidePx
+            }
         }
 
         tvCompactLeftStatus.setTextColor(primaryText)

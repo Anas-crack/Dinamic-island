@@ -255,7 +255,7 @@ class IslandNotificationListener : NotificationListenerService() {
         }
 
         if ((notif.flags and Notification.FLAG_ONGOING_EVENT) != 0) return
-        if ((notif.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        val isGroupSummary = (notif.flags and Notification.FLAG_GROUP_SUMMARY) != 0
 
         var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
@@ -291,6 +291,7 @@ class IslandNotificationListener : NotificationListenerService() {
             else -> shortText
         }
         if (title.isEmpty() && finalText.isEmpty()) return
+        if (isGroupSummary && finalText.isEmpty()) return
 
         val combinedLower = "$title $finalText".lowercase()
         val isVoice = combinedLower.contains("رسالة صوتية") ||

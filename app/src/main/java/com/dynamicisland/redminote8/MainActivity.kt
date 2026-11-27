@@ -184,7 +184,7 @@ class MainActivity : AppCompatActivity() {
 
         rgCutout.setOnCheckedChangeListener { _, checkedId ->
             val isPunch = checkedId == R.id.rbPunchHole
-            val defaultGap = if (isPunch) 28 else 48
+            val defaultGap = if (isPunch) 28 else 22
             settings = settings.copy(
                 cutoutType = if (isPunch) "punch" else "notch",
                 notchGapDp = defaultGap
