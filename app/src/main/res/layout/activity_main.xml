@@ -15,7 +15,7 @@
             <ImageView android:layout_width="64dp" android:layout_height="64dp" android:contentDescription="@string/app_name" android:scaleType="centerCrop" android:src="@drawable/app_logo" />
             <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="14dp" android:layout_weight="1" android:orientation="vertical">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Dynamic Island" android:textColor="#FFFFFF" android:textSize="22sp" android:textStyle="bold" />
-                <TextView android:id="@+id/tvVersionBadge" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="v1.1.0 • Glass Blur + Dual Pill" android:textColor="#38BDF8" android:textSize="12sp" android:textStyle="bold" />
+                <TextView android:id="@+id/tvVersionBadge" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="v1.1.2 • Glass Blur + Dual Pill" android:textColor="#38BDF8" android:textSize="12sp" android:textStyle="bold" />
                 <TextView android:id="@+id/tvServiceState" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="● متوقفة حاليًا" android:textColor="#94A3B8" android:textSize="12sp" android:textStyle="bold" />
             </LinearLayout>
         </LinearLayout>
@@ -156,7 +156,7 @@
             <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="12dp" android:layout_weight="1" android:orientation="vertical">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="عن المطور" android:textColor="#38BDF8" android:textSize="12sp" android:textStyle="bold" />
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="أنس محمد (Anas Mohamed)" android:textColor="#FFFFFF" android:textSize="16sp" android:textStyle="bold" />
-                <TextView android:id="@+id/tvDevVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="تطبيق Dynamic Island — الإصدار v1.1.0" android:textColor="#CBD5E1" android:textSize="12sp" />
+                <TextView android:id="@+id/tvDevVersion" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="تطبيق Dynamic Island — الإصدار v1.1.2" android:textColor="#CBD5E1" android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

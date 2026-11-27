@@ -51,6 +51,8 @@ object IslandLiveStore {
     @Volatile var callNotifKey: String = ""
     @Volatile var callContentIntent: PendingIntent? = null
     @Volatile var callEndAction: PendingIntent? = null
+    @Volatile var callAnswerAction: PendingIntent? = null
+    @Volatile var callIsRinging: Boolean = false
 }
 
 class IslandNotificationListener : NotificationListenerService() {
@@ -198,6 +200,8 @@ class IslandNotificationListener : NotificationListenerService() {
             (notif.actions?.any { act ->
                 val t = act.title?.toString()?.lowercase().orEmpty()
                 t.contains("إنهاء") || t.contains("انهاء") || t.contains("رفض") ||
+                    t.contains("رد") || t.contains("إجابة") || t.contains("قبول") ||
+                    t.contains("answer") || t.contains("accept") ||
                     t.contains("hang up") || t.contains("end call") || t.contains("decline") ||
                     t == "end" || t.contains("إغلاق المكالمة")
             } == true)
@@ -205,31 +209,48 @@ class IslandNotificationListener : NotificationListenerService() {
         if (isCallNotif) {
             val cTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
             val cText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+            var answerPending: PendingIntent? = null
             var endPending: PendingIntent? = null
             notif.actions?.forEach { act ->
                 val t = act.title?.toString()?.lowercase().orEmpty()
-                if (t.contains("إنهاء") || t.contains("انهاء") || t.contains("رفض") ||
+                if (t.contains("رد") || t.contains("إجابة") || t.contains("اجابة") ||
+                    t.contains("قبول") || t.contains("answer") || t.contains("accept")
+                ) {
+                    answerPending = act.actionIntent
+                } else if (t.contains("إنهاء") || t.contains("انهاء") || t.contains("رفض") ||
                     t.contains("hang up") || t.contains("end") || t.contains("decline") ||
-                    t.contains("إغلاق")
+                    t.contains("reject") || t.contains("dismiss") || t.contains("إغلاق")
                 ) {
                     endPending = act.actionIntent
                 }
             }
+            val lowerCombined = "$cTitle $cText".lowercase()
+            val ringing = answerPending != null ||
+                lowerCombined.contains("مكالمة واردة") ||
+                lowerCombined.contains("incoming") ||
+                lowerCombined.contains("يتصل بك") ||
+                lowerCombined.contains("calling")
+            val wasRinging = IslandLiveStore.callIsRinging
             val sameCall = IslandLiveStore.callActive && IslandLiveStore.callNotifKey == sbn.key
             IslandLiveStore.callActive = true
+            IslandLiveStore.callIsRinging = ringing
             IslandLiveStore.callNotifKey = sbn.key ?: ""
             IslandLiveStore.callPackage = pkg
             IslandLiveStore.callCaller = cTitle.ifBlank { cText.ifBlank { getFriendlyAppName(pkg) } }
-            if (!sameCall) {
-                IslandLiveStore.callStartTime = if (notif.`when` > 0L && notif.`when` <= System.currentTimeMillis()) {
+            if (!sameCall || (wasRinging && !ringing)) {
+                IslandLiveStore.callStartTime = if (!ringing && notif.`when` > 0L && notif.`when` <= System.currentTimeMillis()) {
                     notif.`when`
                 } else {
                     System.currentTimeMillis()
                 }
             }
             IslandLiveStore.callContentIntent = notif.contentIntent
+            IslandLiveStore.callAnswerAction = answerPending
             IslandLiveStore.callEndAction = endPending
-            notifyIslandService(DynamicIslandService.ACTION_CALL_UPDATE)
+            notifyIslandService(
+                if (ringing) DynamicIslandService.ACTION_CALL_RINGING
+                else DynamicIslandService.ACTION_CALL_UPDATE
+            )
             return
         }
 
@@ -319,15 +340,38 @@ class IslandNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         super.onNotificationRemoved(sbn)
-        if (sbn != null && IslandLiveStore.callActive &&
+        if (sbn == null) return
+        var changed = false
+        if (IslandLiveStore.callActive &&
             (sbn.key == IslandLiveStore.callNotifKey || sbn.packageName == IslandLiveStore.callPackage)
         ) {
             IslandLiveStore.callActive = false
             IslandLiveStore.callNotifKey = ""
             IslandLiveStore.callContentIntent = null
             IslandLiveStore.callEndAction = null
-            notifyIslandService(DynamicIslandService.ACTION_REFRESH)
+            IslandLiveStore.callAnswerAction = null
+            IslandLiveStore.callIsRinging = false
+            changed = true
         }
+        val removedNotif = sbn.notification
+        val wasMediaNotif = removedNotif != null && (
+            removedNotif.category == Notification.CATEGORY_TRANSPORT ||
+                (removedNotif.extras?.containsKey(Notification.EXTRA_MEDIA_SESSION) == true)
+            )
+        if (IslandLiveStore.mediaActive &&
+            sbn.packageName == IslandLiveStore.mediaPackage &&
+            (wasMediaNotif || !IslandLiveStore.mediaPlaying)
+        ) {
+            IslandLiveStore.activeController = null
+            IslandLiveStore.mediaActive = false
+            IslandLiveStore.mediaPlaying = false
+            IslandLiveStore.mediaTitle = ""
+            IslandLiveStore.mediaArtist = ""
+            IslandLiveStore.mediaPackage = ""
+            IslandLiveStore.mediaArt = null
+            changed = true
+        }
+        if (changed) notifyIslandService(DynamicIslandService.ACTION_REFRESH)
     }
 
     private fun getFriendlyAppName(pkg: String?): String {

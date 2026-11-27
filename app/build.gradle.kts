@@ -11,8 +11,8 @@ android {
         applicationId = "com.dynamicisland.redminote8"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.1.0"
+        versionCode = 13
+        versionName = "1.1.2"
         setProperty("archivesBaseName", "Dynamic Island")
     }
 

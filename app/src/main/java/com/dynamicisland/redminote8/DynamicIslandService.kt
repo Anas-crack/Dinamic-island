@@ -40,6 +40,7 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioRecordingConfiguration
 import android.service.notification.NotificationListenerService
 import android.telecom.TelecomManager
+import android.telephony.TelephonyManager
 import android.transition.AutoTransition
 import android.transition.TransitionManager
 import android.util.TypedValue
@@ -87,6 +88,7 @@ class DynamicIslandService : Service() {
         const val ACTION_TEST_CHARGE = "com.dynamicisland.redminote8.ACTION_TEST_CHARGE"
         const val ACTION_NEW_NOTIF = "com.dynamicisland.redminote8.ACTION_NEW_NOTIF"
         const val ACTION_CALL_UPDATE = "com.dynamicisland.redminote8.ACTION_CALL_UPDATE"
+        const val ACTION_CALL_RINGING = "com.dynamicisland.redminote8.ACTION_CALL_RINGING"
         const val ACTION_TEST_CALL = "com.dynamicisland.redminote8.ACTION_TEST_CALL"
         const val ACTION_TEST_PRIVACY = "com.dynamicisland.redminote8.ACTION_TEST_PRIVACY"
         private const val CHANNEL_ID = "dynamic_island_overlay_channel"
@@ -104,6 +106,7 @@ class DynamicIslandService : Service() {
     private var hiddenByFullscreen: Boolean = false
     private var fullscreenStreak: Int = 0
     private var wasFallbackAudioPlaying: Boolean = false
+    private var mediaPausedSince: Long = 0L
     private var lastSeenNotifVersion: Long = 0L
     private var isCameraActive: Boolean = false
     private var isMicActive: Boolean = false
@@ -214,6 +217,12 @@ class DynamicIslandService : Service() {
                     setExpanded(true)
                     updateIslandUi()
                 }
+                ACTION_CALL_RINGING -> {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    setExpanded(true)
+                    updateIslandUi()
+                }
                 ACTION_CALL_UPDATE -> {
                     hiddenByFullscreen = false
                     wakeUpIsland(forceAnim = true)
@@ -227,11 +236,14 @@ class DynamicIslandService : Service() {
                 }
                 ACTION_TEST_CALL -> {
                     IslandLiveStore.callActive = true
-                    IslandLiveStore.callCaller = "أنس محمد (مكالمة تجريبية)"
+                    IslandLiveStore.callIsRinging = true
+                    IslandLiveStore.callCaller = "أنس محمد (مكالمة واردة)"
                     IslandLiveStore.callPackage = packageName
                     IslandLiveStore.callStartTime = System.currentTimeMillis()
                     IslandLiveStore.callContentIntent = null
                     IslandLiveStore.callEndAction = null
+            IslandLiveStore.callAnswerAction = null
+            IslandLiveStore.callIsRinging = false
                     hiddenByFullscreen = false
                     wakeUpIsland(forceAnim = true)
                     setExpanded(true)
@@ -271,6 +283,43 @@ class DynamicIslandService : Service() {
                     wasCharging = false
                     chargingPopupUntil = 0L
                     updateIslandUi()
+                }
+                TelephonyManager.ACTION_PHONE_STATE_CHANGED -> {
+                    val stateStr = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+                    @Suppress("DEPRECATION")
+                    val num = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                    when (stateStr) {
+                        TelephonyManager.EXTRA_STATE_RINGING -> {
+                            IslandLiveStore.callActive = true
+                            IslandLiveStore.callIsRinging = true
+                            if (!num.isNullOrBlank()) IslandLiveStore.callCaller = num
+                            else if (IslandLiveStore.callCaller.isBlank()) IslandLiveStore.callCaller = "مكالمة واردة"
+                            hiddenByFullscreen = false
+                            wakeUpIsland(forceAnim = true)
+                            setExpanded(true)
+                            updateIslandUi()
+                        }
+                        TelephonyManager.EXTRA_STATE_OFFHOOK -> {
+                            IslandLiveStore.callActive = true
+                            if (IslandLiveStore.callIsRinging || IslandLiveStore.callStartTime == 0L) {
+                                IslandLiveStore.callIsRinging = false
+                                IslandLiveStore.callStartTime = System.currentTimeMillis()
+                            }
+                            hiddenByFullscreen = false
+                            wakeUpIsland(forceAnim = true)
+                            updateIslandUi()
+                        }
+                        TelephonyManager.EXTRA_STATE_IDLE -> {
+                            IslandLiveStore.callActive = false
+                            IslandLiveStore.callIsRinging = false
+                            IslandLiveStore.callNotifKey = ""
+                            IslandLiveStore.callAnswerAction = null
+                            IslandLiveStore.callEndAction = null
+                            IslandLiveStore.callContentIntent = null
+                            setExpanded(false)
+                            updateIslandUi()
+                        }
+                    }
                 }
                 Intent.ACTION_BATTERY_CHANGED,
                 BluetoothAdapter.ACTION_STATE_CHANGED,
@@ -335,6 +384,7 @@ class DynamicIslandService : Service() {
             addAction(ACTION_TEST_CHARGE)
             addAction(ACTION_NEW_NOTIF)
             addAction(ACTION_CALL_UPDATE)
+            addAction(ACTION_CALL_RINGING)
             addAction(ACTION_TEST_CALL)
             addAction(ACTION_TEST_PRIVACY)
         }
@@ -344,6 +394,7 @@ class DynamicIslandService : Service() {
             addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
+            addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(appReceiver, appFilter, Context.RECEIVER_NOT_EXPORTED)
@@ -612,17 +663,34 @@ class DynamicIslandService : Service() {
     private fun checkSystemCallState() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val isRingingMode = am.mode == AudioManager.MODE_RINGTONE
             val inVoiceCall = am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION
-            if (inVoiceCall && !IslandLiveStore.callActive) {
+            if (isRingingMode) {
+                val newlyRinging = !IslandLiveStore.callActive || !IslandLiveStore.callIsRinging
                 IslandLiveStore.callActive = true
-                IslandLiveStore.callCaller = "مكالمة جارية"
-                IslandLiveStore.callPackage = ""
-                IslandLiveStore.callStartTime = System.currentTimeMillis()
-                if (!hiddenByFullscreen) wakeUpIsland(forceAnim = true)
-            } else if (!inVoiceCall && IslandLiveStore.callActive &&
+                IslandLiveStore.callIsRinging = true
+                if (IslandLiveStore.callCaller.isBlank()) IslandLiveStore.callCaller = "مكالمة واردة"
+                if (newlyRinging) {
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                    setExpanded(true)
+                }
+            } else if (inVoiceCall) {
+                if (!IslandLiveStore.callActive || IslandLiveStore.callIsRinging) {
+                    IslandLiveStore.callActive = true
+                    IslandLiveStore.callIsRinging = false
+                    if (IslandLiveStore.callCaller.isBlank() || IslandLiveStore.callCaller == "مكالمة واردة") {
+                        IslandLiveStore.callCaller = "مكالمة جارية"
+                    }
+                    IslandLiveStore.callStartTime = System.currentTimeMillis()
+                    hiddenByFullscreen = false
+                    wakeUpIsland(forceAnim = true)
+                }
+            } else if (IslandLiveStore.callActive &&
                 IslandLiveStore.callNotifKey.isBlank() && IslandLiveStore.callPackage != packageName
             ) {
                 IslandLiveStore.callActive = false
+                IslandLiveStore.callIsRinging = false
             }
         } catch (_: Exception) {
         }
@@ -687,7 +755,22 @@ class DynamicIslandService : Service() {
         }
     }
 
+    private fun clearMediaStore() {
+        IslandLiveStore.activeController = null
+        IslandLiveStore.mediaActive = false
+        IslandLiveStore.mediaPlaying = false
+        IslandLiveStore.mediaTitle = ""
+        IslandLiveStore.mediaArtist = ""
+        IslandLiveStore.mediaPackage = ""
+        IslandLiveStore.mediaArt = null
+        IslandLiveStore.secondaryMediaActive = false
+        IslandLiveStore.secondaryMediaPackage = ""
+        IslandLiveStore.secondaryMediaTitle = ""
+        mediaPausedSince = 0L
+    }
+
     private fun pollActiveMediaSessions() {
+        val now = System.currentTimeMillis()
         val hasNotifPerm = NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
         if (hasNotifPerm) {
             try {
@@ -708,11 +791,23 @@ class DynamicIslandService : Service() {
 
                     if (best != null) {
                         val st = best.playbackState?.state ?: PlaybackState.STATE_NONE
+                        val isNowPlaying = (st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING)
+
+                        // Auto-clear stale PAUSED music sessions after 12 seconds so closed music apps NEVER stay stuck!
+                        if (!isNowPlaying) {
+                            if (mediaPausedSince == 0L) mediaPausedSince = now
+                            if (now - mediaPausedSince >= 12_000L) {
+                                clearMediaStore()
+                                return
+                            }
+                        } else {
+                            mediaPausedSince = 0L
+                        }
+
                         val meta = best.metadata
                         val pkg = best.packageName ?: ""
                         val appLabel = getFriendlyAppName(pkg)
                         val wasPlaying = IslandLiveStore.mediaPlaying
-                        val isNowPlaying = (st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_BUFFERING)
                         wasFallbackAudioPlaying = false
                         IslandLiveStore.activeController = best
                         IslandLiveStore.mediaActive = true
@@ -730,7 +825,11 @@ class DynamicIslandService : Service() {
                         IslandLiveStore.mediaArt = meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                             ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART)
 
-                        val second = sessions.firstOrNull { it.packageName != pkg && !it.packageName.isNullOrBlank() }
+                        val second = sessions.firstOrNull {
+                            val sst = it.playbackState?.state
+                            it.packageName != pkg && !it.packageName.isNullOrBlank() &&
+                                (sst == PlaybackState.STATE_PLAYING || sst == PlaybackState.STATE_BUFFERING)
+                        }
                         if (second != null) {
                             IslandLiveStore.secondaryMediaActive = true
                             IslandLiveStore.secondaryMediaPackage = second.packageName ?: ""
@@ -752,10 +851,12 @@ class DynamicIslandService : Service() {
             }
         }
 
+        // No active/valid MediaSession found -> check AudioManager, else CLEAR completely so nothing stays stuck!
         IslandLiveStore.secondaryMediaActive = false
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             if (am.isMusicActive) {
+                mediaPausedSince = 0L
                 IslandLiveStore.activeController = null
                 IslandLiveStore.mediaActive = true
                 IslandLiveStore.mediaPlaying = true
@@ -778,12 +879,10 @@ class DynamicIslandService : Service() {
                 }
             } else {
                 wasFallbackAudioPlaying = false
-                if (IslandLiveStore.activeController == null) {
-                    IslandLiveStore.mediaActive = false
-                    IslandLiveStore.mediaPlaying = false
-                }
+                clearMediaStore()
             }
         } catch (_: Exception) {
+            clearMediaStore()
         }
     }
 
@@ -985,6 +1084,32 @@ class DynamicIslandService : Service() {
                 updateIslandUi()
             }
             view.findViewById<TextView>(R.id.btnCallOpen).setOnClickListener {
+                if (IslandLiveStore.callIsRinging) {
+                    var answered = false
+                    try {
+                        IslandLiveStore.callAnswerAction?.let {
+                            it.send()
+                            answered = true
+                        }
+                    } catch (_: Exception) {
+                    }
+                    if (!answered && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                            @Suppress("DEPRECATION")
+                            tm.acceptRingingCall()
+                            answered = true
+                        } catch (_: Exception) {
+                        }
+                    }
+                    IslandLiveStore.callIsRinging = false
+                    IslandLiveStore.callStartTime = System.currentTimeMillis()
+                    if (IslandLiveStore.callCaller.contains("واردة")) {
+                        IslandLiveStore.callCaller = IslandLiveStore.callCaller.replace("واردة", "جارية")
+                    }
+                    updateIslandUi()
+                    return@setOnClickListener
+                }
                 var opened = false
                 try {
                     IslandLiveStore.callContentIntent?.let {
@@ -1035,6 +1160,8 @@ class DynamicIslandService : Service() {
                 IslandLiveStore.callNotifKey = ""
                 IslandLiveStore.callContentIntent = null
                 IslandLiveStore.callEndAction = null
+            IslandLiveStore.callAnswerAction = null
+            IslandLiveStore.callIsRinging = false
                 setExpanded(false)
                 updateIslandUi()
             }
@@ -1323,11 +1450,12 @@ class DynamicIslandService : Service() {
             satelliteBubble.visibility = View.GONE
         }
 
+        val maxCompactW = settings.compactWidthDp.coerceIn(160, 380)
         val targetWidth = when {
-            isExpanded -> dpToPx(344)
+            isExpanded -> dpToPx(340)
             isCoverBar -> ViewGroup.LayoutParams.MATCH_PARENT
-            wantSat -> dpToPx((settings.compactWidthDp - 34).coerceAtLeast(210))
-            else -> dpToPx(settings.compactWidthDp)
+            wantSat -> dpToPx((maxCompactW - 48).coerceAtLeast(145))
+            else -> dpToPx(maxCompactW)
         }
         val targetMinHeight = if (isCoverBar) {
             dpToPx(settings.barHeightDp.coerceIn(30, 58))
@@ -1362,19 +1490,20 @@ class DynamicIslandService : Service() {
         val micLive = isMicActive || (nowMs < privacyDemoUntil)
         ivCamActive.visibility = if (camLive) View.VISIBLE else View.GONE
         ivMicActive.visibility = if (micLive) View.VISIBLE else View.GONE
-        ivBluetooth.visibility = if (settings.showStatusIcons && btOn) View.VISIBLE else View.GONE
+        val showMiniStatus = settings.showStatusIcons && (settings.coverStatusBar || settings.compactWidthDp >= 250)
+        ivBluetooth.visibility = if (showMiniStatus && btOn) View.VISIBLE else View.GONE
         ivBluetooth.setColorFilter(Color.rgb(96, 165, 250))
 
-        ivSilent.visibility = if (settings.showStatusIcons && silentOn) View.VISIBLE else View.GONE
+        ivSilent.visibility = if (showMiniStatus && silentOn) View.VISIBLE else View.GONE
         ivSilent.setColorFilter(Color.rgb(251, 191, 36))
 
-        ivWifi.visibility = if (settings.showStatusIcons && hasWifi) View.VISIBLE else View.GONE
+        ivWifi.visibility = if (showMiniStatus && hasWifi) View.VISIBLE else View.GONE
         ivWifi.setColorFilter(if (isLight) Color.rgb(2, 132, 199) else Color.rgb(56, 189, 248))
 
-        ivSignal.visibility = if (settings.showStatusIcons && (hasCell || !hasWifi)) View.VISIBLE else View.GONE
+        ivSignal.visibility = if (showMiniStatus && (hasCell || !hasWifi)) View.VISIBLE else View.GONE
         ivSignal.setColorFilter(if (hasCell) (if (isLight) Color.rgb(15, 23, 42) else Color.WHITE) else Color.rgb(100, 116, 139))
 
-        tvBatteryLeft.visibility = if (settings.showStatusIcons) View.VISIBLE else View.GONE
+        tvBatteryLeft.visibility = if (showMiniStatus) View.VISIBLE else View.GONE
         tvBatteryLeft.text = if (isCharging) "⚡$batteryPct%" else "$batteryPct%"
         tvBatteryLeft.setTextColor(
             when {
@@ -1424,7 +1553,8 @@ class DynamicIslandService : Service() {
         when {
             IslandLiveStore.callActive -> {
                 showVortex(false)
-                val callTimer = formatCallDuration(IslandLiveStore.callStartTime)
+                val btnCallOpenView = view.findViewById<TextView>(R.id.btnCallOpen)
+                val btnCallEndView = view.findViewById<TextView>(R.id.btnCallEnd)
                 val callAppIcon = loadAppIconBitmap(IslandLiveStore.callPackage)
                 if (callAppIcon != null && IslandLiveStore.callPackage != packageName) {
                     ivCompactIcon.setImageBitmap(callAppIcon)
@@ -1433,13 +1563,28 @@ class DynamicIslandService : Service() {
                     ivCompactIcon.setImageResource(R.drawable.ic_call_live)
                     ivExpandedIcon.setImageResource(R.drawable.ic_call_live)
                 }
-                tvCompactRightName.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
-                tvCompactLeftStatus.text = "📞 $callTimer"
-                tvCompactLeftStatus.setTextColor(Color.rgb(52, 211, 153))
-                tvExpandedTitle.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
-                tvExpandedSub.text = "مدة المكالمة: $callTimer"
-                tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
-                tvExpandedMeta.text = "مكالمة نشطة • $statusSummary"
+                if (IslandLiveStore.callIsRinging) {
+                    tvCompactRightName.text = IslandLiveStore.callCaller.ifBlank { "مكالمة واردة" }
+                    tvCompactLeftStatus.text = "📞 يرن الآن"
+                    tvCompactLeftStatus.setTextColor(Color.rgb(52, 211, 153))
+                    tvExpandedTitle.text = IslandLiveStore.callCaller.ifBlank { "مكالمة واردة" }
+                    tvExpandedSub.text = "مكالمة واردة — اضغط للرد أو الرفض"
+                    tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
+                    tvExpandedMeta.text = "يرن الآن 📞 • $statusSummary"
+                    btnCallOpenView.text = "📞 رد على المكالمة"
+                    btnCallEndView.text = "📵 رفض"
+                } else {
+                    val callTimer = formatCallDuration(IslandLiveStore.callStartTime)
+                    tvCompactRightName.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
+                    tvCompactLeftStatus.text = "📞 $callTimer"
+                    tvCompactLeftStatus.setTextColor(Color.rgb(52, 211, 153))
+                    tvExpandedTitle.text = IslandLiveStore.callCaller.ifBlank { "مكالمة جارية" }
+                    tvExpandedSub.text = "مدة المكالمة: $callTimer"
+                    tvExpandedSub.setTextColor(Color.rgb(52, 211, 153))
+                    tvExpandedMeta.text = "مكالمة نشطة • $statusSummary"
+                    btnCallOpenView.text = "📞 فتح المكالمة"
+                    btnCallEndView.text = "📵 إنهاء المكالمة"
+                }
                 mediaControls.visibility = View.GONE
                 notifActionsRow.visibility = View.GONE
                 callActionsRow.visibility = View.VISIBLE
